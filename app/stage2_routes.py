@@ -1,4 +1,5 @@
 """Stage 2 pages: run screening, review hazards, Gate 2."""
+import time
 from html import escape
 
 from fastapi import APIRouter, Form, Request
@@ -63,8 +64,13 @@ def stage2_page(request: Request, run_id: str, error: str = ""):
         return page(head + "<p class=banner>This run was made with an older version. Plan it again from the home page.</p>")
     sc = run.get("screen") or {}
     st = sc.get("status", "none")
+    stalled = st in ("running", "queued") and time.time() - sc.get("beat", 0) > 180
+    live = st in ("running", "queued") and not stalled
     refresh = "<meta http-equiv=refresh content=5>" if st in ("running", "queued") else ""
-    if st in ("running", "queued"):
+    if stalled:
+        msg = ("<p class=banner>Screening looks stalled (the app was probably restarted while it ran). "
+               "Press Restart below. Finished points are kept, so nothing is repeated.</p>")
+    elif live:
         msg = f"<p class=banner style='color:#036;border-color:#036'>Screening in progress: {sc.get('done', 0)} of {sc.get('total', '?')} points. This page refreshes itself.</p>"
     elif st == "error":
         msg = f"<p class=banner>Screening stopped: {escape(sc.get('error', ''))}. Press the button to resume (finished points are kept).</p>"
@@ -78,8 +84,9 @@ def stage2_page(request: Request, run_id: str, error: str = ""):
     if st == "done" and inc:
         msg += (f"<p class=banner>Live roadworks feed not used: {escape(inc['error'])}</p>" if inc.get("error")
                 else f"<p class=muted>TomTom roadworks and closures checked {escape(inc['fetched'])}: {len(inc['items'])} found in the area.</p>")
-    btn = "" if st in ("running", "queued") else (
-        f"<form method=post action=/run/{run_id}/stage2/start><button>{'Re-run' if st == 'done' else 'Run'} screening "
+    label = "Restart" if stalled else ("Re-run" if st == "done" else "Run")
+    btn = "" if live else (
+        f"<form method=post action=/run/{run_id}/stage2/start><button>{label} screening "
         "(uses Street View and Claude, a few minutes)</button></form>")
     body = refresh + head + err + msg + btn
     if st == "done":
