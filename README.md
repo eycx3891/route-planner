@@ -1,2 +1,2 @@
 # Route Planner
-Milestone M1: password-protected hello world. See chat for setup steps.
+Milestone M2: TomTom routing, road by road tables, saved runs, Gate 1. See chat for setup steps.
