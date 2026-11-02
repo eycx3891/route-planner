@@ -4,6 +4,7 @@ import hmac
 import os
 import secrets
 from html import escape
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
@@ -136,7 +137,7 @@ def plan(request: Request, dest: str = Form(...), origin: str = Form(DEFAULT_ORI
         run["alts"] = alts
         store.save_run(run)
     except (tomtom.TomTomError, KeyError, IndexError) as e:
-        return RedirectResponse("/?error=" + escape(str(e))[:200].replace(" ", "+"), status_code=303)
+        return RedirectResponse("/?error=" + quote(str(e)[:300]), status_code=303)
     return RedirectResponse(f"/run/{run['id']}", status_code=303)
 
 
@@ -162,7 +163,7 @@ def reroute(request: Request, run_id: str, vias_primary: str = Form(""), vias_se
         touch(run)
         store.save_run(run)
     except (tomtom.TomTomError, KeyError, IndexError) as e:
-        return RedirectResponse(f"/run/{run_id}?error=" + escape(str(e))[:200].replace(" ", "+"), status_code=303)
+        return RedirectResponse(f"/run/{run_id}?error=" + quote(str(e)[:300]), status_code=303)
     return RedirectResponse(f"/run/{run_id}", status_code=303)
 
 

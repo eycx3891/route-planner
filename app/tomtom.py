@@ -29,8 +29,8 @@ def _get(path: str, params: list) -> dict:
 
 
 def geocode(text: str) -> dict:
-    data = _get(f"/search/2/geocode/{quote(text)}.json",
-                [("key", _key()), ("countrySet", "SG"), ("limit", 1)])
+    data = _get(f"/search/2/search/{quote(text)}.json",
+                [("key", _key()), ("countrySet", "SG"), ("limit", 1), ("typeahead", "false")])
     results = data.get("results") or []
     if not results:
         raise TomTomError(f"No match found for: {text}")
