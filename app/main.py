@@ -10,13 +10,14 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import planner, stage2, stage2_routes, store, tomtom
+from . import geo, planner, stage2, stage2_routes, store, tomtom
 from .ui import STYLE, fmt_dist, fmt_time, login_needed, page, table
 
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 SESSION_SECRET = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
 KEYS = ["TOMTOM_KEY", "GOOGLE_KEY", "ANTHROPIC_API_KEY"]
 DEFAULT_ORIGIN = "712 Yishun Avenue 5, Singapore 760712"
+HEADINGS = {"any": None, "N": 0, "NE": 45, "E": 90, "SE": 135, "S": 180, "SW": 225, "W": 270, "NW": 315}
 
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax", max_age=60 * 60 * 8)
@@ -81,8 +82,10 @@ def home(request: Request, error: str = ""):
     keys = ", ".join(f"{k}: {'set' if os.environ.get(k) else 'MISSING'}" for k in KEYS)
     return page(f"""<h2>Route Planner</h2>{err}
 <form method=post action=/plan>
-<label>Destination</label><input type=text name=dest placeholder="e.g. 9 Aviation Park Road, Singapore 498760" required>
-<label>Start</label><input type=text name=origin value="{escape(DEFAULT_ORIGIN)}">
+<label>Destination</label><input type=text name=dest placeholder="Address, or coordinates like 1.3642, 104.0223" required>
+<label>Start (address, or coordinates pasted from Google Maps like 1.3500, 103.7000)</label><input type=text name=origin value="{escape(DEFAULT_ORIGIN)}">
+<label>Direction the truck faces when it sets off (stops illegal U-turns at the start)</label>
+<select name=heading>{''.join(f'<option value={k}>{k if k != "any" else "Any (let the router choose)"}</option>' for k in HEADINGS)}</select><br>
 <label>Trip</label><select name=direction><option value=outbound>Outbound (start to destination)</option>
 <option value=return>Return (destination to start)</option></select><br>
 <button>Plan primary and secondary routes</button></form>
@@ -92,16 +95,16 @@ def home(request: Request, error: str = ""):
 
 @app.post("/plan")
 def plan(request: Request, dest: str = Form(...), origin: str = Form(DEFAULT_ORIGIN),
-         direction: str = Form("outbound")):
+         direction: str = Form("outbound"), heading: str = Form("any")):
     if (r := login_needed(request)):
         return r
     try:
         run = {"id": store.new_id(), "version": 1, "direction": "return" if direction == "return" else "outbound",
                "origin": tomtom.geocode(origin.strip() or DEFAULT_ORIGIN), "dest": tomtom.geocode(dest.strip()),
-               "gates": {"1": "pending", "2": "pending"}, "created": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z"}
+               "start_heading": HEADINGS.get(heading), "gates": {"1": "pending", "2": "pending"}, "created": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z"}
         run["updated"] = run["created"]
         o, d = endpoints(run)
-        primary, secondary = planner.plan_two(o, d, [], [])
+        primary, secondary = planner.plan_two(o, d, [], [], run.get("start_heading"))
         run["routes"] = {"primary": primary, "secondary": secondary}
         try:
             stage2.locate_mandatory(run)
@@ -122,7 +125,7 @@ def reroute(request: Request, run_id: str, vias_primary: str = Form(""), vias_se
         return RedirectResponse("/", status_code=303)
     try:
         o, d = endpoints(run)
-        primary, secondary = planner.plan_two(o, d, geocode_lines(vias_primary), geocode_lines(vias_secondary))
+        primary, secondary = planner.plan_two(o, d, geocode_lines(vias_primary), geocode_lines(vias_secondary), run.get("start_heading"))
         run["routes"] = {"primary": primary, "secondary": secondary}
         touch(run)
         store.save_run(run)
@@ -175,15 +178,29 @@ def show_run(request: Request, run_id: str, error: str = ""):
               if approved else "<p class=banner>GATE 1 PENDING: PROVISIONAL, NOT APPROVED FOR USE</p>")
     err = f"<p class=banner>{escape(error)}</p>" if error else ""
     o, d = endpoints(run)
+    warn = ""
+    g = run["routes"]["primary"]["data"]["geom"]
+    for name, pt, end in (("Start", o, g[0]), ("Destination", d, g[-1])):
+        gap = geo.hav(pt["lat"], pt["lon"], end[0], end[1])
+        if gap > 40:
+            warn += (f"<p class=banner>{name} point is {gap:.0f} m from the nearest road, so TomTom moved it onto the road. "
+                     f"If the route starts or ends on the wrong road, start a new run and enter exact coordinates "
+                     f"(right click the spot in Google Maps and copy the numbers).</p>")
+    first = run["routes"]["primary"]["data"]["rows"][0]["road"]
+    last = run["routes"]["primary"]["data"]["rows"][-1]["road"]
+    ends = (f"<p><b>Start:</b> {escape(o['label'])} <a href='{geo.map_link(o['lat'], o['lon'])}' target=_blank>map</a> | "
+            f"<a href='{geo.sv_link(o['lat'], o['lon'])}' target=_blank>Street View</a> (route leaves on <b>{escape(first)}</b>)<br>"
+            f"<b>End:</b> {escape(d['label'])} <a href='{geo.map_link(d['lat'], d['lon'])}' target=_blank>map</a> | "
+            f"<a href='{geo.sv_link(d['lat'], d['lon'])}' target=_blank>Street View</a> (route arrives on <b>{escape(last)}</b>)</p>")
     pv = "\n".join(v["text"] for v in run["routes"]["primary"]["vias"])
     sv = "\n".join(v["text"] for v in (run["routes"]["secondary"] or {"vias": []})["vias"])
     return page(f"""<p><a href=/>Back</a></p><h2>{escape(o['label'])}<br>to {escape(d['label'])}</h2>
 <p class=muted>Run {run['id']} | version {run['version']} | {run['direction']} | baseline = TomTom, tunnels avoided, no live traffic</p>
-{status}{err}
+{status}{err}{ends}{warn}
 {table(run['routes']['primary'], 'blue', 'PRIMARY ROUTE (blue)', None, stage2.mandatory_status(run, 'primary') if stage2.ready(run) else '')}
 {table(run['routes']['secondary'], 'red', 'SECONDARY ROUTE (red)', None, stage2.mandatory_status(run, 'secondary') if (run['routes']['secondary'] and stage2.ready(run)) else '')}
 {compare(run)}
-<h3>Edit routes</h3><p class=muted>One place per line, in travel order. Leave blank to use TomTom's own choice. Editing resets Gate 1.</p>
+<h3>Edit routes</h3><p class=muted>One place per line, in travel order (an address, a road name, or coordinates copied from Google Maps). Leave blank to let the app choose. Editing resets Gate 1.</p>
 <form method=post action=/run/{run['id']}/reroute>
 <label>Primary via points</label><textarea name=vias_primary rows=3 cols=60>{escape(pv)}</textarea><br>
 <label>Secondary via points</label><textarea name=vias_secondary rows=3 cols=60>{escape(sv)}</textarea><br>

@@ -19,13 +19,14 @@ SYSTEM = """You screen Singapore Street View images for a route planning exercis
 Rules: report ONLY what is visible in each image. Never guess. If the view is blocked, dark or unclear, set usable=false.
 Categories for findings: 1 roadworks/construction visible; 2 lane closure, lane reduction or narrow lane; 3 temporary speed limit or temporary signal arrangement;
 4 tight turn, constrained junction, or LARGE multi-lane junction; 5 short merge lane, multi-lane filtering, abrupt lane change, difficult exit positioning, or a small slip road;
-6 U-turn exposure; 7 tunnel, underpass (road dipping below ground or enclosed) or overhead obstruction (roads merely passing under a flyover are NOT underpasses);
+6 U-turn exposure; 7 tunnel or underpass (a road dipping below ground level or enclosed). A road that merely passes UNDER a bridge, flyover or overpass is allowed and is NOT category 7;
 9 blind spot or steep gradient; 10 busy entrance/exit where vehicles may emerge, or queuing.
 Do not use categories 8, 11 or 12.
 Return ONLY a JSON array, one object per image, in the same order, with keys:
 id (string), usable (bool), findings (list of {cat:int, what:string<=20 words, risk:string<=20 words, precaution:string<=20 words, conf:"high"|"medium"|"low"}),
 lanes (string<=30 words: lane count and arrows/markings visible ahead, or "not visible"), signals (bool, traffic lights visible), slip (bool, a slip road is visible),
-junction ("none"|"small"|"medium"|"large"), landmarks (list of up to 3 phrases a driver could use to recognise this junction, each with colour, type and side relative to the direction of travel,
+junction ("none"|"small"|"medium"|"large"),
+overhead (list of {what:string<=8 words, clearance_m:number or null} for EVERY bridge, flyover or overpass the road passes under in this view; read any posted height clearance sign such as "4.5m" or "H 4.5", otherwise null), landmarks (list of up to 3 phrases a driver could use to recognise this junction, each with colour, type and side relative to the direction of travel,
 e.g. "grey multi-storey building on the left", "blue overhead sign reading Mandai Rd", "red-roofed petrol station on the right". Prefer large permanent things
 (buildings, bridges, signs with readable text, petrol stations, shelters). Never use vehicles, people or anything temporary. Only describe what you can see)."""
 
@@ -66,6 +67,19 @@ def screen(items: list) -> dict:
     raise VisionError(f"Claude API failed: {last}")
 
 
+def _overhead(raw) -> list:
+    out = []
+    for o in raw or []:
+        if not isinstance(o, dict):
+            continue
+        try:
+            cl = float(o["clearance_m"]) if o.get("clearance_m") is not None else None
+        except (TypeError, ValueError):
+            cl = None
+        out.append({"what": str(o.get("what", "overpass"))[:80], "clearance_m": cl})
+    return out[:4]
+
+
 def _parse(text: str, items: list) -> dict:
     a, b = text.find("["), text.rfind("]")
     try:
@@ -86,8 +100,8 @@ def _parse(text: str, items: list) -> dict:
                                "precaution": str(f.get("precaution", ""))[:160], "conf": str(f.get("conf", "low"))})
             out[x["id"]] = {"usable": bool(x.get("usable", True)), "findings": fs, "lanes": str(x.get("lanes", ""))[:200],
                             "signals": bool(x.get("signals")), "slip": bool(x.get("slip")),
-                            "junction": str(x.get("junction", "none")), "landmarks": [str(l)[:90] for l in (x.get("landmarks") or [])][:3]}
+                            "junction": str(x.get("junction", "none")), "overhead": _overhead(x.get("overhead")), "landmarks": [str(l)[:90] for l in (x.get("landmarks") or [])][:3]}
     for i in items:  # anything Claude skipped is "unable to verify"
         out.setdefault(i["id"], {"usable": False, "findings": [], "lanes": "", "signals": False, "slip": False,
-                                 "junction": "none", "landmarks": []})
+                                 "junction": "none", "overhead": [], "landmarks": []})
     return out

@@ -30,7 +30,23 @@ def _get(path: str, params: list) -> dict:
     return r.json()
 
 
+def parse_coords(text: str):
+    """Accepts 'lat, lon' pasted from Google Maps. Returns (lat, lon) or None."""
+    parts = text.replace(";", ",").replace("(", "").replace(")", "").split(",")
+    if len(parts) == 2:
+        try:
+            lat, lon = float(parts[0]), float(parts[1])
+        except ValueError:
+            return None
+        if 1.0 < lat < 1.6 and 103.5 < lon < 104.2:
+            return lat, lon
+    return None
+
+
 def geocode(text: str) -> dict:
+    xy = parse_coords(text)
+    if xy:
+        return {"text": text, "label": f"Coordinates {xy[0]:.5f}, {xy[1]:.5f} (entered by you)", "lat": xy[0], "lon": xy[1]}
     data = _get(f"/search/2/search/{quote(text)}.json",
                 [("key", _key()), ("countrySet", "SG"), ("limit", 1), ("typeahead", "false")])
     results = data.get("results") or []
@@ -41,12 +57,14 @@ def geocode(text: str) -> dict:
             "lat": top["position"]["lat"], "lon": top["position"]["lon"]}
 
 
-def calculate(points: list, alternatives: int = 0, route_type: str = "fastest") -> dict:
+def calculate(points: list, alternatives: int = 0, route_type: str = "fastest", heading=None) -> dict:
     """Route through points (dicts with lat, lon). Tunnels avoided, no live traffic."""
     loc = ":".join(f"{p['lat']},{p['lon']}" for p in points)
     params = [("key", _key()), ("travelMode", "car"), ("routeType", route_type),
               ("traffic", "false"), ("instructionsType", "text"), ("language", "en-GB"),
               ("sectionType", "tunnel"), ("avoid", "tunnels")]
+    if heading is not None:
+        params.append(("vehicleHeading", int(heading) % 360))
     if alternatives and len(points) == 2:
         params.append(("maxAlternatives", alternatives))
     return _get(f"/routing/1/calculateRoute/{loc}/json", params)

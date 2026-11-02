@@ -93,7 +93,7 @@ def stage2_page(request: Request, run_id: str, error: str = ""):
                  else f"<p class=banner>GATE 2 PENDING: {pending} hazard(s) awaiting your review. NOT APPROVED FOR USE</p>")
         for rn, colour, title in (("primary", "blue", "PRIMARY ROUTE with danger areas"), ("secondary", "red", "SECONDARY ROUTE with danger areas")):
             if run["routes"].get(rn):
-                body += table(run["routes"][rn], colour, title, [("Danger areas", dang_cells(run, rn)), ("Landmark at turn", stage2.landmarks_for(run, rn))],
+                body += table(run["routes"][rn], colour, title, [("Danger areas", dang_cells(run, rn)), ("Landmark at turn", stage2.landmarks_for(run, rn)), ("Overhead clearance", stage2.clearances_for(run, rn))],
                               stage2.mandatory_status(run, rn))
         body += "<h3>Hazard register</h3><p class=muted>Open each Street View link, then set Confirmed or Rejected. Rejected hazards disappear from the tables.</p>"
         body += (f"<form method=post action=/run/{run_id}/stage2/review><table><tr><th>ID</th><th>What and why</th><th>Routes</th>"
@@ -124,6 +124,13 @@ def stage2_page(request: Request, run_id: str, error: str = ""):
             grids += f"<h4>{rn}</h4><table><tr><th>#</th><th>Road</th>{head_r}</tr>{rows}</table>"
         key = "<p class=muted>H = hazard recorded, s = screened no hazard, ? = unable to verify (no usable image), n/a = out of scope. Items: " + "; ".join(f"{k} {v}" for k, v in CATS.items()) + "</p>"
         body += f"<details><summary><b>Full 12 point checklist per road</b></summary>{grids}{key}</details>"
+        dg = stage2.diagnostics(run)
+        body += ("<details open><summary><b>Diagnostics (send me a screenshot of this if results look wrong)</b></summary>"
+                 f"<p>Screening points: {dg['points']} | usable images: {dg['usable']} | no Street View coverage: {dg['nocov']} | "
+                 f"image unusable: {dg['unusable']} | not screened: {dg['missing']}</p>"
+                 f"<p>Street View answers: {escape(str(dg['sv']))} | image dates: {escape(' to '.join(dg['dates']) or 'none')}</p>"
+                 f"<p>TomTom manoeuvre types on these routes: {escape(str(dg['maneuvers']))}</p>"
+                 + "".join(f"<p class=muted>{escape(x)}</p>" for x in dg["sample"]) + "</details>")
         body += f"<form method=post action=/run/{run_id}/stage2/approve><button>Approve Gate 2 (danger areas)</button></form>"
     return page(body)
 

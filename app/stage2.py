@@ -11,6 +11,9 @@ from . import geo, incidents, store, streetview, tomtom, vision
 
 LOCK = threading.Lock()
 RADIUS = 100  # metres: a route "passes" a designated location if within this distance
+TRUCK_HEIGHT_M = 4.0  # overhead bridges with posted clearance at or below height + margin are flagged
+MARGIN_M = 0.3
+FATAL = {"REQUEST_DENIED", "OVER_QUERY_LIMIT", "INVALID_REQUEST", "UNKNOWN_ERROR"}
 MID_EVERY = 3000  # screen long segments every 3 km
 CLUSTER = 40  # metres: observations closer than this become one hazard
 
@@ -109,6 +112,41 @@ def mandatory_status(run, rn) -> str:
     return "<p class=muted>" + "<br>".join(out) + "</p>"
 
 
+def clearances_for(run, rn) -> dict:
+    """Overhead bridges seen in the images of each row, with posted clearance where readable."""
+    d = run["routes"][rn]["data"]
+    seen = {}
+    for c in candidates(run):
+        if c["route"] != rn:
+            continue
+        for o in (run.get("vision", {}).get(c["key"]) or {}).get("overhead", []):
+            cl = o.get("clearance_m")
+            low = cl is not None and cl <= TRUCK_HEIGHT_M + MARGIN_M
+            txt = f"{o.get('what', 'overpass')}: " + (f"{cl} m posted" if cl is not None else "clearance not visible, check")
+            seen.setdefault(c["row"], {})[txt] = low
+    return {r: "<br>".join((f"<b class=hz>{t}</b>" if low else t) for t, low in items.items()) for r, items in seen.items()}
+
+
+def diagnostics(run) -> dict:
+    cands = candidates(run)
+    vis = run.get("vision", {})
+    res = [vis.get(c["key"]) for c in cands]
+    mans = {}
+    for rn in routes_of(run):
+        for s in run["routes"][rn]["data"]["steps"]:
+            mans[s["maneuver"]] = mans.get(s["maneuver"], 0) + 1
+    dates = sorted({v.get("date") for v in res if v and v.get("date")})
+    sample = []
+    for c, v in zip(cands, res):
+        if v and v.get("usable") and len(sample) < 3:
+            sample.append(f"{c['route']} row {c['row'] + 1} ({c['kind']}): lanes={v.get('lanes')!r}; junction={v.get('junction')}; "
+                          f"findings={len(v.get('findings', []))}; landmarks={v.get('landmarks')}")
+    return {"points": len(cands), "usable": sum(1 for v in res if v and v.get("usable")),
+            "nocov": sum(1 for v in res if v and v.get("nocov")), "unusable": sum(1 for v in res if v and not v.get("usable") and not v.get("nocov")),
+            "missing": sum(1 for v in res if v is None), "maneuvers": mans, "dates": dates[:1] + dates[-1:], "sample": sample,
+            "sv": (run.get("screen") or {}).get("sv", {})}
+
+
 def landmarks_for(run, rn) -> dict:
     """Landmark text at each row's first turning point, taken from the Street View reading."""
     d = run["routes"][rn]["data"]
@@ -172,8 +210,11 @@ def _save(run):
 def _fetch(c):
     try:
         m = streetview.metadata(c["lat"], c["lon"])
-        if m.get("status") != "OK":
-            return c["key"], {"nocov": True, "usable": False, "findings": [], "note": m.get("status", "")}, None
+        st = m.get("status", "")
+        if st in FATAL:
+            return c["key"], {"error": f"Street View says {st}: {m.get('error_message', 'check the Google key and that Street View Static API is enabled')}", "fatal": True, "status": st}, None
+        if st != "OK":
+            return c["key"], {"nocov": True, "usable": False, "findings": [], "note": st, "status": st}, None
         return c["key"], {"date": m.get("date", ""), "pano": m["pano_id"]}, streetview.image(m["pano_id"], c["heading"])
     except (streetview.StreetViewError, httpx.HTTPError) as e:
         return c["key"], {"error": str(e)[:150]}, None
@@ -196,6 +237,13 @@ def run_screen(run_id: str):
             chunk = need[i:i + 15]
             with ThreadPoolExecutor(6) as ex:
                 fetched = list(ex.map(_fetch, chunk))
+            fatal = [m for _, m, _ in fetched if m.get("fatal")]
+            if fatal:
+                raise RuntimeError(fatal[0]["error"])
+            sv = run["screen"].setdefault("sv", {})
+            for _, m, _ in fetched:
+                k = m.get("status") or ("ERROR" if "error" in m else "OK")
+                sv[k] = sv.get(k, 0) + 1
             byctx = {c["key"]: c["ctx"] for c in chunk}
             items = []
             for key, meta, img in fetched:
@@ -256,6 +304,11 @@ def observations(run) -> list:
             ev = f"Street View {res.get('date', '?')}"
             for f in res.get("findings", []):
                 obs.append(_obs(c, f["cat"], f["what"], f["risk"], f["precaution"], "vision", f["conf"], ev))
+            for o in res.get("overhead", []):
+                cl = o.get("clearance_m")
+                if cl is not None and cl <= TRUCK_HEIGHT_M + MARGIN_M:
+                    obs.append(_obs(c, 7, f"Overhead bridge ({o.get('what', '')}) posted clearance {cl} m", f"Too low for a {TRUCK_HEIGHT_M} m truck",
+                                    "Do not pass under it; add a via point to avoid it", "vision", "high", ev))
             if res.get("junction") == "large":
                 obs.append(_obs(c, 4, "Large junction visible", "Large multi-lane junction", "Pick lane early, watch for cross traffic", "vision", "medium", ev))
             if res.get("slip"):
