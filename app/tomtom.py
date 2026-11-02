@@ -4,6 +4,8 @@ from urllib.parse import quote
 
 import httpx
 
+from . import geo
+
 BASE = "https://api.tomtom.com"
 
 
@@ -39,10 +41,10 @@ def geocode(text: str) -> dict:
             "lat": top["position"]["lat"], "lon": top["position"]["lon"]}
 
 
-def calculate(points: list, alternatives: int = 0) -> dict:
+def calculate(points: list, alternatives: int = 0, route_type: str = "fastest") -> dict:
     """Route through points (dicts with lat, lon). Tunnels avoided, no live traffic."""
     loc = ":".join(f"{p['lat']},{p['lon']}" for p in points)
-    params = [("key", _key()), ("travelMode", "car"), ("routeType", "fastest"),
+    params = [("key", _key()), ("travelMode", "car"), ("routeType", route_type),
               ("traffic", "false"), ("instructionsType", "text"), ("language", "en-GB"),
               ("sectionType", "tunnel"), ("avoid", "tunnels")]
     if alternatives and len(points) == 2:
@@ -59,12 +61,23 @@ def _label(ins: dict) -> str:
 
 
 def parse_route(route: dict) -> dict:
-    """Turn one TomTom route into totals plus road by road rows (merged by road)."""
+    """One TomTom route -> totals, merged road rows, raw steps (with camera view) and geometry."""
     total_m = route["summary"]["lengthInMeters"]
     total_s = route["summary"]["travelTimeInSeconds"]
     ins = route.get("guidance", {}).get("instructions", [])
     tunnel = any(str(s.get("sectionType", "")).upper() == "TUNNEL" for s in route.get("sections", []))
-    rows = []
+    pts = []
+    for leg in route.get("legs", []):
+        pts += [(p["latitude"], p["longitude"]) for p in leg.get("points", [])]
+    cum = [0.0]
+    for a, b in zip(pts, pts[1:]):
+        cum.append(cum[-1] + geo.hav(a[0], a[1], b[0], b[1]))
+    geom, last = [], None
+    for i, p in enumerate(pts):
+        if last is None or cum[i] - last >= 20 or i == len(pts) - 1:
+            geom.append([round(p[0], 5), round(p[1], 5), int(cum[i])])
+            last = cum[i]
+    rows, steps = [], []
     for i, step in enumerate(ins):
         nxt = ins[i + 1] if i + 1 < len(ins) else None
         end_m = nxt["routeOffsetInMeters"] if nxt else total_m
@@ -72,15 +85,33 @@ def parse_route(route: dict) -> dict:
         dist = max(end_m - step["routeOffsetInMeters"], 0)
         secs = max(end_s - step.get("travelTimeInSeconds", 0), 0)
         msg = step.get("message") or step.get("instructionType", "")
-        uturn = "UTURN" in str(step.get("maneuver", "")).upper() or "u-turn" in msg.lower()
+        man = str(step.get("maneuver", ""))
+        uturn = "UTURN" in man.upper() or "u-turn" in msg.lower()
         label = _label(step)
         if rows and rows[-1]["road"] == label and not uturn:
             rows[-1]["dist_m"] += dist
             rows[-1]["secs"] += secs
             rows[-1]["steps"] += 1
         else:
-            rows.append({"road": label, "action": msg, "dist_m": dist, "secs": secs,
-                         "steps": 1, "uturn": uturn,
-                         "lat": step.get("point", {}).get("latitude"),
-                         "lon": step.get("point", {}).get("longitude")})
-    return {"total_m": total_m, "total_s": total_s, "tunnel": tunnel, "rows": rows}
+            rows.append({"road": label, "action": msg, "dist_m": dist, "secs": secs, "steps": 1,
+                         "uturn": uturn, "step": i})
+        pt = step.get("point", {})
+        lat, lon = pt.get("latitude"), pt.get("longitude")
+        cam_lat, cam_lon, head = lat, lon, None
+        pi = step.get("pointIndex")
+        if pts and isinstance(pi, int) and 0 <= pi < len(pts):
+            lat, lon = pts[pi]
+            j = pi
+            while j > 0 and cum[pi] - cum[j] < 35:
+                j -= 1
+            cam_lat, cam_lon = pts[j]
+            if geo.hav(cam_lat, cam_lon, lat, lon) >= 10:
+                head = geo.bearing(cam_lat, cam_lon, lat, lon)
+            else:
+                k = min(pi + 5, len(pts) - 1)
+                head = geo.bearing(lat, lon, pts[k][0], pts[k][1]) if k > pi else None
+        steps.append({"n": i, "off": step["routeOffsetInMeters"], "road": label, "msg": msg, "maneuver": man,
+                      "junction": str(step.get("junctionType", "")), "angle": step.get("turnAngleInDecimalDegrees"),
+                      "lat": lat, "lon": lon, "cam_lat": cam_lat, "cam_lon": cam_lon,
+                      "heading": round(head) if head is not None else 0, "row": len(rows) - 1, "uturn": uturn})
+    return {"total_m": total_m, "total_s": total_s, "tunnel": tunnel, "rows": rows, "steps": steps, "geom": geom}
