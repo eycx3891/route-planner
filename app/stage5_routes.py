@@ -87,6 +87,7 @@ def stage5_page(request: Request, run_id: str):
                  "<li>Landmarks, lanes and overhead clearances are read from dated Street View images, so roadworks and layout changes since then are not shown.</li>"
                  "<li>Where a lane is marked <b>Not established</b>, nothing was visible or available. Use the view link to check.</li></ul>" + ESCALATE)
         body += f"<form method=post action=/run/{run_id}/stage5/approve><button>Approve driver reference (Gate 5)</button></form>"
+        body += f"<form method=get action=/run/{run_id}/stage6><button>Go to Stage 6: maps</button></form>"
     return page(body)
 
 

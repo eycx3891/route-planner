@@ -10,7 +10,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import geo, planner, stage2, stage2_routes, stage3_routes, stage4_routes, stage5_routes, store, tomtom
+from . import geo, planner, stage2, stage2_routes, stage3_routes, stage4_routes, stage5_routes, stage6_routes, store, tomtom
 from .ui import STYLE, fmt_dist, fmt_time, login_needed, page, table
 
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
@@ -25,6 +25,7 @@ app.include_router(stage2_routes.router)
 app.include_router(stage3_routes.router)
 app.include_router(stage4_routes.router)
 app.include_router(stage5_routes.router)
+app.include_router(stage6_routes.router)
 
 # ---------- auth ----------
 @app.get("/healthz", response_class=PlainTextResponse)
@@ -74,6 +75,8 @@ def touch(run):
     run["stage4"] = None
     run["final"] = None
     run["frozen"] = None
+    run["maps"] = None
+    run["gates"]["6"] = "pending"
     if run.get("screen"):
         run["screen"] = {"status": "stale", "done": 0, "total": 0, "error": ""}
     run["updated"] = datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z"

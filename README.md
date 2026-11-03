@@ -4,3 +4,4 @@ Stage 2: Street View + Claude screening, TomTom roadworks, D1/D2, landmarks, Gat
 Stage 3: revised times (50 km/h formula), graph, Gate 3.
 Stage 4: rest stops (Google Places, 7 point check), route with stops, Gate 4.
 Stage 5: frozen driver reference with lane evidence rules.
+Stage 6: map plan, maps drawn over Google Static Maps, consistency checks, Gate 6.

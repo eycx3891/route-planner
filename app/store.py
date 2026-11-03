@@ -61,3 +61,29 @@ def list_runs(limit: int = 15) -> list:
         if run:
             out.append(run)
     return out
+
+
+def save_blob(name: str, data: bytes) -> None:
+    """Binary files such as map images. name like maps/<run id>/M1.png."""
+    if ".." in name or name.startswith("/"):
+        raise ValueError("bad name")
+    if BUCKET:
+        _gcs().blob(name).upload_from_string(data, content_type="image/png")
+    else:
+        path = f"{DATA_DIR}/{name}"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+
+
+def load_blob(name: str):
+    if ".." in name or name.startswith("/"):
+        return None
+    try:
+        if BUCKET:
+            blob = _gcs().blob(name)
+            return blob.download_as_bytes() if blob.exists() else None
+        with open(f"{DATA_DIR}/{name}", "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
