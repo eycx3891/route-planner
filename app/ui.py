@@ -11,7 +11,7 @@ input[type=text]{width:100%;box-sizing:border-box}
 table{border-collapse:collapse;width:100%;margin:.5rem 0 1rem}
 th,td{border:1px solid #bbb;padding:.35rem .5rem;text-align:left;vertical-align:top;font-size:.92rem}
 th{background:#eee} tr.total td{font-weight:700;background:#f4f4f4}
-tr.bad td{background:#fdd} .hz{color:#b00} .pill{display:inline-block;padding:0 .4rem;border:1px solid #b00;border-radius:1rem;color:#b00;font-weight:700}
+tr.bad td{background:#fdd} tr.detour td{background:#ffe0b8} tr.rest td{background:#ffb347;font-weight:700} .hz{color:#b00} .pill{display:inline-block;padding:0 .4rem;border:1px solid #b00;border-radius:1rem;color:#b00;font-weight:700}
 .g{font-family:monospace;text-align:center} details{margin:.5rem 0} .banner{padding:.6rem;border:2px solid #b00;color:#b00;font-weight:700;margin:.8rem 0}
 .ok{color:#080;font-weight:700} .muted{color:#666;font-size:.85rem}
 .blue{border-left:8px solid #2a6fd6;padding-left:.6rem} .red{border-left:8px solid #d62a2a;padding-left:.6rem}

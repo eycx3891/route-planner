@@ -58,11 +58,22 @@ def geocode(text: str) -> dict:
 
 
 def calculate(points: list, alternatives: int = 0, route_type: str = "fastest", heading=None) -> dict:
+    try:
+        return _calculate(points, alternatives, route_type, heading, True)
+    except TomTomError as e:
+        if "error 400" in str(e):  # lane data not offered: plan without it
+            return _calculate(points, alternatives, route_type, heading, False)
+        raise
+
+
+def _calculate(points: list, alternatives, route_type, heading, lanes) -> dict:
     """Route through points (dicts with lat, lon). Tunnels avoided, no live traffic."""
     loc = ":".join(f"{p['lat']},{p['lon']}" for p in points)
     params = [("key", _key()), ("travelMode", "car"), ("routeType", route_type),
               ("traffic", "false"), ("instructionsType", "text"), ("language", "en-GB"),
               ("sectionType", "tunnel"), ("avoid", "tunnels")]
+    if lanes:
+        params.append(("sectionType", "lanes"))
     if heading is not None:
         params.append(("vehicleHeading", int(heading) % 360))
     if alternatives and len(points) == 2:
@@ -95,6 +106,10 @@ def parse_route(route: dict) -> dict:
         if last is None or cum[i] - last >= 20 or i == len(pts) - 1:
             geom.append([round(p[0], 5), round(p[1], 5), int(cum[i])])
             last = cum[i]
+    lane_secs = []
+    for sec in route.get("sections", []):
+        if str(sec.get("sectionType", "")).upper() == "LANES" and sec.get("lanes"):
+            lane_secs.append({"end": sec.get("endPointIndex", -1), "lanes": sec["lanes"]})
     rows, steps = [], []
     for i, step in enumerate(ins):
         nxt = ins[i + 1] if i + 1 < len(ins) else None
@@ -128,8 +143,16 @@ def parse_route(route: dict) -> dict:
             else:
                 k = min(pi + 5, len(pts) - 1)
                 head = geo.bearing(lat, lon, pts[k][0], pts[k][1]) if k > pi else None
-        steps.append({"n": i, "off": step["routeOffsetInMeters"], "road": label, "msg": msg, "maneuver": man,
+        lanes_info = None
+        if lane_secs and isinstance(pi, int):
+            near = min(lane_secs, key=lambda x: abs(x["end"] - pi))
+            if abs(near["end"] - pi) <= 25:
+                ln = near["lanes"]
+                lanes_info = {"count": len(ln), "follow": [k + 1 for k, l in enumerate(ln) if l.get("follow")],
+                              "dirs": [l.get("directions", []) for l in ln]}
+        steps.append({"lanes": lanes_info, "n": i, "off": step["routeOffsetInMeters"], "road": label, "msg": msg, "maneuver": man,
                       "junction": str(step.get("junctionType", "")), "angle": step.get("turnAngleInDecimalDegrees"),
                       "lat": lat, "lon": lon, "cam_lat": cam_lat, "cam_lon": cam_lon,
-                      "heading": round(head) if head is not None else 0, "row": len(rows) - 1, "uturn": uturn})
+                      "heading": round(head) if head is not None else 0, "row": len(rows) - 1, "uturn": uturn,
+                      "dist_m": dist, "secs": secs})
     return {"total_m": total_m, "total_s": total_s, "tunnel": tunnel, "rows": rows, "steps": steps, "geom": geom}

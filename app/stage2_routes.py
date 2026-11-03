@@ -139,6 +139,7 @@ def stage2_page(request: Request, run_id: str, error: str = ""):
                  f"<p>TomTom manoeuvre types on these routes: {escape(str(dg['maneuvers']))}</p>"
                  + "".join(f"<p class=muted>{escape(x)}</p>" for x in dg["sample"]) + "</details>")
         body += f"<form method=post action=/run/{run_id}/stage2/approve><button>Approve Gate 2 (danger areas)</button></form>"
+        body += f"<form method=get action=/run/{run_id}/stage3><button>Go to Stage 3: revised times</button></form>"
     return page(body)
 
 

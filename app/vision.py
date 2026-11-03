@@ -105,3 +105,70 @@ def _parse(text: str, items: list) -> dict:
         out.setdefault(i["id"], {"usable": False, "findings": [], "lanes": "", "signals": False, "slip": False,
                                  "junction": "none", "overhead": [], "landmarks": []})
     return out
+
+
+PARK_SYSTEM = """You assess whether a place could serve as a rest stop for a long vehicle (9 m) from Street View images, for a route planning exercise.
+Report ONLY what is visible. Never guess. If the views are blocked, dark or show no parking area, set usable=false or is_parking=false.
+Return ONLY a JSON array, one object per candidate id, in order, with keys:
+id (string), usable (bool), is_parking (bool: a parking area for vehicles is visible), kind ("heavy vehicle park"|"commercial carpark"|"public carpark"|"roadside"|"other"|"unclear"),
+open_area (bool: open air, not multi-storey, covered or underground), space ("large"|"medium"|"small"|"unclear": room for a 9 m vehicle to enter, turn and park without blocking traffic),
+entrance_seen (bool), barrier (bool: gate, gantry or height barrier visible), restriction_text (string: any readable sign restricting lorries or heavy vehicles, else ""), notes (string<=30 words)."""
+
+
+def _ask(system: str, content: list, max_tokens: int = 4000) -> str:
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise VisionError("ANTHROPIC_API_KEY is not set")
+    body = {"model": MODEL, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": content}]}
+    headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+    last = ""
+    for attempt in range(4):
+        try:
+            r = httpx.post(URL, json=body, headers=headers, timeout=180)
+        except httpx.HTTPError as e:
+            last = str(e)
+            time.sleep(2 + attempt * 3)
+            continue
+        if r.status_code == 200:
+            return "".join(b.get("text", "") for b in r.json().get("content", []))
+        last = f"{r.status_code}: {r.text[:300]}"
+        if r.status_code in (429, 500, 502, 503, 529):
+            time.sleep(3 + attempt * 5)
+            continue
+        break
+    raise VisionError(f"Claude API failed: {last}")
+
+
+def _json_array(text: str):
+    a, b = text.find("["), text.rfind("]")
+    try:
+        return json.loads(text[a:b + 1])
+    except (ValueError, TypeError) as e:
+        raise VisionError(f"Could not read Claude's reply as JSON: {text[:200]}") from e
+
+
+def screen_parking(items: list) -> dict:
+    """items: [{id, context, jpegs:[bytes]}]. Returns {id: result}."""
+    content = []
+    for it in items:
+        content.append({"type": "text", "text": f"Candidate id: {it['id']}. {it['context']}"})
+        for jpg in it["jpegs"]:
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(jpg).decode()}})
+    content.append({"type": "text", "text": "Return the JSON array now."})
+    ids = {i["id"] for i in items}
+    out = {}
+    for x in _json_array(_ask(PARK_SYSTEM, content)):
+        if isinstance(x, dict) and x.get("id") in ids:
+            out[x["id"]] = {"usable": bool(x.get("usable")), "is_parking": bool(x.get("is_parking")), "kind": str(x.get("kind", "unclear"))[:30],
+                            "open_area": bool(x.get("open_area")), "space": str(x.get("space", "unclear"))[:10],
+                            "entrance_seen": bool(x.get("entrance_seen")), "barrier": bool(x.get("barrier")),
+                            "restriction_text": str(x.get("restriction_text", ""))[:120], "notes": str(x.get("notes", ""))[:200]}
+    for i in items:
+        out.setdefault(i["id"], {"usable": False, "is_parking": False, "kind": "unclear", "open_area": False, "space": "unclear",
+                                 "entrance_seen": False, "barrier": False, "restriction_text": "", "notes": ""})
+    return out
+
+
+def compose(system: str, user_text: str) -> list:
+    """Text only call returning a JSON array (used for the driver reference)."""
+    return _json_array(_ask(system, [{"type": "text", "text": user_text}], 12000))

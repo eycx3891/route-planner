@@ -25,8 +25,8 @@ def metadata(lat: float, lon: float) -> dict:
     return r.json()  # status, date (YYYY-MM), pano_id, location
 
 
-def image(pano_id: str, heading: float) -> bytes:
-    r = httpx.get(IMG, params={"size": "640x400", "pano": pano_id, "heading": int(heading), "fov": 90,
+def image(pano_id: str, heading: float, fov: int = 90) -> bytes:
+    r = httpx.get(IMG, params={"size": "640x400", "pano": pano_id, "heading": int(heading), "fov": fov,
                                "pitch": 0, "key": _key()}, timeout=30)
     if r.status_code != 200 or not r.headers.get("content-type", "").startswith("image"):
         raise StreetViewError(f"Street View image error {r.status_code}: {r.text[:200]}")

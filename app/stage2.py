@@ -220,49 +220,54 @@ def _fetch(c):
         return c["key"], {"error": str(e)[:150]}, None
 
 
+def screen_core(run, persist):
+    """Screen every point of the routes in `run` (cached points are skipped) and rebuild the hazard list."""
+    locate_mandatory(run)
+    fetch_incidents(run)
+    vis = run.setdefault("vision", {})
+    seen, need = set(), []
+    for c in candidates(run):
+        if "usable" not in vis.get(c["key"], {}) and c["key"] not in seen:
+            seen.add(c["key"])
+            need.append(c)
+    run["screen"] = {"status": "running", "done": 0, "total": len(need), "error": "", "started": now()}
+    persist()
+    for i in range(0, len(need), 15):
+        chunk = need[i:i + 15]
+        with ThreadPoolExecutor(6) as ex:
+            fetched = list(ex.map(_fetch, chunk))
+        fatal = [m for _, m, _ in fetched if m.get("fatal")]
+        if fatal:
+            raise RuntimeError(fatal[0]["error"])
+        sv = run["screen"].setdefault("sv", {})
+        for _, m, _ in fetched:
+            k = m.get("status") or ("ERROR" if "error" in m else "OK")
+            sv[k] = sv.get(k, 0) + 1
+        byctx = {c["key"]: c["ctx"] for c in chunk}
+        items = []
+        for key, meta, img in fetched:
+            if img is None:
+                if "error" not in meta:
+                    vis[key] = meta  # no coverage: remembered
+                continue
+            vis[key] = meta
+            items.append({"id": key, "context": byctx[key], "jpeg": img})
+        batches = [items[j:j + 5] for j in range(0, len(items), 5)]
+        with ThreadPoolExecutor(3) as ex:
+            for res in ex.map(vision.screen, batches):
+                for key, r in res.items():
+                    vis[key].update(r)
+        run["screen"]["done"] += len(chunk)
+        persist()
+    build_hazards(run)
+    run["screen"].update({"status": "done", "finished": now()})
+    persist()
+
+
 def run_screen(run_id: str):
     run = store.load_run(run_id)
     try:
-        locate_mandatory(run)
-        fetch_incidents(run)
-        vis = run.setdefault("vision", {})
-        seen, need = set(), []
-        for c in candidates(run):
-            if "usable" not in vis.get(c["key"], {}) and c["key"] not in seen:
-                seen.add(c["key"])
-                need.append(c)
-        run["screen"] = {"status": "running", "done": 0, "total": len(need), "error": "", "started": now()}
-        _save(run)
-        for i in range(0, len(need), 15):
-            chunk = need[i:i + 15]
-            with ThreadPoolExecutor(6) as ex:
-                fetched = list(ex.map(_fetch, chunk))
-            fatal = [m for _, m, _ in fetched if m.get("fatal")]
-            if fatal:
-                raise RuntimeError(fatal[0]["error"])
-            sv = run["screen"].setdefault("sv", {})
-            for _, m, _ in fetched:
-                k = m.get("status") or ("ERROR" if "error" in m else "OK")
-                sv[k] = sv.get(k, 0) + 1
-            byctx = {c["key"]: c["ctx"] for c in chunk}
-            items = []
-            for key, meta, img in fetched:
-                if img is None:
-                    if "error" not in meta:
-                        vis[key] = meta  # no coverage: remembered
-                    continue
-                vis[key] = meta
-                items.append({"id": key, "context": byctx[key], "jpeg": img})
-            batches = [items[j:j + 5] for j in range(0, len(items), 5)]
-            with ThreadPoolExecutor(3) as ex:
-                for res in ex.map(vision.screen, batches):
-                    for key, r in res.items():
-                        vis[key].update(r)
-            run["screen"]["done"] += len(chunk)
-            _save(run)
-        build_hazards(run)
-        run["screen"].update({"status": "done", "finished": now()})
-        _save(run)
+        screen_core(run, lambda: _save(run))
     except Exception as e:  # keep progress; user can press the button again to resume
         run["screen"] = {**run.get("screen", {}), "status": "error", "error": f"{type(e).__name__}: {e}"[:300]}
         _save(run)
