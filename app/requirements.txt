@@ -1,6 +1,0 @@
-fastapi
-uvicorn[standard]
-itsdangerous
-python-multipart
-httpx
-google-cloud-storage
