@@ -31,8 +31,10 @@ def save_run(run: dict) -> None:
         _gcs().blob(f"runs/{run['id']}.json").upload_from_string(data, content_type="application/json")
     else:
         os.makedirs(f"{DATA_DIR}/runs", exist_ok=True)
-        with open(f"{DATA_DIR}/runs/{run['id']}.json", "w") as f:
+        tmp = f"{DATA_DIR}/runs/.{run['id']}.{uuid.uuid4().hex[:6]}.tmp"
+        with open(tmp, "w") as f:
             f.write(data)
+        os.replace(tmp, f"{DATA_DIR}/runs/{run['id']}.json")  # atomic: a reader never sees a half written file
 
 
 def load_run(run_id: str):
@@ -54,7 +56,7 @@ def list_runs(limit: int = 15) -> list:
         ids = [n[5:-5] for n in names if n.endswith(".json")]
     else:
         folder = f"{DATA_DIR}/runs"
-        ids = sorted(f[:-5] for f in os.listdir(folder)) if os.path.isdir(folder) else []
+        ids = sorted(f[:-5] for f in os.listdir(folder) if f.endswith(".json") and not f.startswith(".")) if os.path.isdir(folder) else []
     out = []
     for rid in reversed(ids[-limit:]):
         run = load_run(rid)

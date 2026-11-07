@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
-from . import geo, stage2, stage3, stage4, store, streetview, vision
+from . import geo, overlay, stage2, stage3, stage4, store, streetview, vision
 
 POINTS = ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"]
 EXPRESS = ("AYE", "PIE", "CTE", "TPE", "SLE", "BKE", "KJE", "KPE", "MCE", "ECP", "NSC")
@@ -68,7 +68,12 @@ def _fetch_view(v):
             raise RuntimeError(f"Street View says {st}: {m.get('error_message', '')}")
         if st != "OK":
             return {"ok": False}
-        return {"ok": True, "pano": m["pano_id"], "jpeg": streetview.image(m["pano_id"], v["heading"], 90)}
+        loc = m.get("location") or {}
+        cam = (loc.get("lat", v["lat"]), loc.get("lng", v["lon"]))
+        jpg = streetview.image(m["pano_id"], v["heading"], 90)
+        if v.get("_data"):
+            jpg = overlay.draw_path(jpg, cam, v["heading"], overlay.route_ahead(v["_data"], cam[0], cam[1], 230))
+        return {"ok": True, "pano": m["pano_id"], "jpeg": jpg}
     except (streetview.StreetViewError, httpx.HTTPError):
         return {"ok": False}
 
@@ -101,6 +106,9 @@ def write_segment(road, express, nxt, vis):
     elif filt:
         parts.append(f"Watch for {filt}.")
     parts.append(f"{nxt['msg']} at {turn}." if turn else f"{nxt['msg']}.")
+    over = (vis or {}).get("over", "") if usable else ""
+    if over:
+        parts.insert(0, over[0].upper() + over[1:] + ".")
     return {"lane": lane, "lane_status": "evidence" if known else "missing", "filter_cue": filt, "turn_cue": turn,
             "instruction": " ".join(parts), "note": (vis or {}).get("note", "") if usable else ""}
 
@@ -111,18 +119,21 @@ def build_route(run, rn, data, hazards, lab, progress):
     per = calc["items"] if calc["level"] == "steps" and len(calc["items"]) == len(steps) else None
     segs = {i: segment_views(data, i) for i in range(len(steps) - 1)}
     flat = [(i, v) for i, vs in segs.items() for v in vs]
+    for _, v in flat:
+        v["_data"] = data
     progress(f"{rn} route: fetching {len(flat)} Street View images")
     with ThreadPoolExecutor(6) as ex:
         got = list(ex.map(lambda t: _fetch_view(t[1]), flat))
     for (i, v), r in zip(flat, got):
         v.update(r)
+        v.pop("_data", None)
     items = []
     for i, vs in segs.items():
         views = [{"label": v["label"], "jpeg": v["jpeg"]} for v in vs if v.get("ok")]
         if views:
             st, nxt = steps[i], steps[i + 1]
             ctx = (f"The truck drives along {st['road']} ({st.get('dist_m', 0)} m) heading {compass(geo.bearing(st['lat'], st['lon'], nxt['lat'], nxt['lon']) if st['lat'] and nxt['lat'] else 0)}. "
-                   f"At the end it must: {nxt['msg']} (action: {stage2.classify(nxt)}).")
+                   f"At the end it must: {nxt['msg']} (action: {stage2.classify(nxt)}). The yellow line on each image is the path the truck takes.")
             items.append({"id": f"{rn}{i}", "context": ctx, "views": views})
     reads = {}
     batches = [items[j:j + 3] for j in range(0, len(items), 3)]

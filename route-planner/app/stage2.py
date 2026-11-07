@@ -1,5 +1,6 @@
 """Stage 2: screen every segment of both routes for danger areas (hazard IDs D1, D2, ...)."""
 import bisect
+import hashlib
 import datetime
 import threading
 import time
@@ -7,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
-from . import geo, incidents, store, streetview, tomtom, vision
+from . import geo, incidents, overlay, store, streetview, tomtom, vision
 
 LOCK = threading.Lock()
 RADIUS = 100  # metres: a route "passes" a designated location if within this distance
@@ -265,9 +266,9 @@ def candidates(run) -> list:
                 continue
             clat, clon = s["cam_lat"] or s["lat"], s["cam_lon"] or s["lon"]
             cls = classify(s)
-            out.append({"route": rn, "row": s["row"], "kind": "step", "lat": clat, "lon": clon, "plat": s["lat"], "plon": s["lon"], "cls": cls,
+            out.append({"run_id": run["id"], "data": d, "route": rn, "row": s["row"], "kind": "step", "lat": clat, "lon": clon, "plat": s["lat"], "plon": s["lon"], "cls": cls,
                         "heading": s["heading"], "key": key_of(clat, clon, s["heading"], cls), "step": s,
-                        "ctx": f"THE TRUCK IS: {s['msg']} (action: {cls}) on {s['road']}. The camera looks towards that point from about 35 m before it."})
+                        "ctx": f"THE TRUCK IS: {s['msg']} (action: {cls}) on {s['road']}. The camera looks towards that point from about 35 m before it. The yellow line drawn on the road is the exact path the truck takes."})
         g = d["geom"]
         offs = [p[2] for p in g]
         for r_i, row in enumerate(d["rows"]):
@@ -278,14 +279,14 @@ def candidates(run) -> list:
             while t < start + row["dist_m"] - 800:
                 i = min(bisect.bisect_left(offs, t), len(g) - 2)
                 h = round(geo.bearing(g[max(i - 1, 0)][0], g[max(i - 1, 0)][1], g[i + 1][0], g[i + 1][1]))
-                out.append({"route": rn, "row": r_i, "kind": "mid", "lat": g[i][0], "lon": g[i][1], "plat": g[i][0], "plon": g[i][1], "cls": "continue straight",
+                out.append({"run_id": run["id"], "data": d, "route": rn, "row": r_i, "kind": "mid", "lat": g[i][0], "lon": g[i][1], "plat": g[i][0], "plon": g[i][1], "cls": "continue straight",
                             "heading": h, "key": key_of(g[i][0], g[i][1], h, "continue straight"), "step": None,
                             "ctx": f"THE TRUCK IS: continuing straight along {row['road']} (action: continue straight). No turn here."})
                 t += MID_EVERY
     for m in MANDATORY:
         for rn, p in passes(run, m["id"]).items():
             text, cls = truck_action(run["routes"][rn]["data"], p["lat"], p["lon"])
-            out.append({"route": rn, "row": p["row"], "kind": "mandatory", "lat": p["cam_lat"], "lon": p["cam_lon"],
+            out.append({"run_id": run["id"], "data": run["routes"][rn]["data"], "route": rn, "row": p["row"], "kind": "mandatory", "lat": p["cam_lat"], "lon": p["cam_lon"],
                         "plat": p["lat"], "plon": p["lon"], "heading": p["heading"], "cls": cls, "key": key_of(p["cam_lat"], p["cam_lon"], p["heading"], cls),
                         "step": None, "ctx": f"THE TRUCK IS: {text} (action: {cls}). Operator-designated location: {m['name']}."})
     return out
@@ -306,7 +307,20 @@ def _fetch(c):
             return c["key"], {"error": f"Street View says {st}: {m.get('error_message', 'check the Google key and that Street View Static API is enabled')}", "fatal": True, "status": st}, None
         if st != "OK":
             return c["key"], {"nocov": True, "usable": False, "findings": [], "note": st, "status": st}, None
-        return c["key"], {"date": m.get("date", ""), "pano": m["pano_id"]}, streetview.image(m["pano_id"], c["heading"])
+        loc = m.get("location") or {}
+        cam = (loc.get("lat", c["lat"]), loc.get("lng", c["lon"]))
+        head = c["heading"]
+        if c["kind"] in ("step", "mandatory") and geo.hav(cam[0], cam[1], c["plat"], c["plon"]) >= 8:
+            head = round(geo.bearing(cam[0], cam[1], c["plat"], c["plon"]))  # look straight at the manoeuvre from where the camera really is
+        jpg = streetview.image(m["pano_id"], head)
+        if c.get("data"):
+            jpg = overlay.draw_path(jpg, cam, head, overlay.route_ahead(c["data"], cam[0], cam[1]))
+        view = hashlib.md5(c["key"].encode()).hexdigest()[:16]
+        try:
+            store.save_blob(f"views/{c['run_id']}/{view}.jpg", jpg, "image/jpeg")
+        except Exception:
+            view = ""
+        return c["key"], {"date": m.get("date", ""), "pano": m["pano_id"], "view": view}, jpg
     except (streetview.StreetViewError, httpx.HTTPError) as e:
         return c["key"], {"error": str(e)[:150]}, None
 
@@ -465,6 +479,8 @@ def build_hazards(run):
             tgt["landmark"] = "; ".join(r["landmarks"][:2])
         if not tgt["pano"] and r.get("pano"):
             tgt["pano"] = r["pano"]
+        if not tgt.get("view") and r.get("view"):
+            tgt["view"] = r["view"]
         if o["cat"] not in tgt["cats"]:
             tgt["cats"].append(o["cat"])
         tgt["routes"].setdefault(c["route"], c["row"])

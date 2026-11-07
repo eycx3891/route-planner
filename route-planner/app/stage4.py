@@ -122,10 +122,10 @@ def criteria(c) -> list:
     elif not sv.get("entrance_seen"):
         add(6, "UNVERIFIED", "Parking seen but the entrance was not")
     else:
-        add(6, "PASS", f"Entrance and parking area seen ({sv.get('date', '?')} imagery)")
+        add(6, "PASS", "Entrance and parking area seen in Street View")
     st = {x["n"]: x["status"] for x in out}
     if st[4] == "PASS" and st[6] == "PASS":
-        add(7, "PASS", f"Usable space seen in imagery dated {sv.get('date', '?')}; no live occupancy data")
+        add(7, "PASS", "Usable space seen in Street View; no live occupancy data")
     else:
         add(7, "UNVERIFIED", "Availability not established")
     return out

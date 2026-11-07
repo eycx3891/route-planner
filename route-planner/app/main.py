@@ -92,7 +92,7 @@ def touch(run):
 
 
 @app.get("/", response_class=HTMLResponse)
-def home(request: Request, error: str = ""):
+def home(request: Request, error: str = "", origin: str = "", dest: str = "", direction: str = "outbound"):
     if (r := login_needed(request)):
         return r
     err = f"<p class=banner>{escape(error)}</p>" if error else ""
@@ -103,12 +103,12 @@ def home(request: Request, error: str = ""):
     keys = ", ".join(f"{k}: {'set' if os.environ.get(k) else 'MISSING'}" for k in KEYS)
     return page(f"""<h2>Route Planner</h2>{err}
 <form method=post action=/plan>
-<label>Destination</label><input type=text name=dest placeholder="Address, or coordinates like 1.3642, 104.0223" required>
-<label>Start (address, or coordinates pasted from Google Maps like 1.3500, 103.7000)</label><input type=text name=origin value="{escape(DEFAULT_ORIGIN)}">
+<label>Destination</label><input type=text name=dest autocomplete=off value="{escape(dest, quote=True)}" placeholder="Address, or coordinates like 1.3642, 104.0223" required>
+<label>Start (address, or coordinates pasted from Google Maps like 1.3500, 103.7000)</label><input type=text name=origin autocomplete=off value="{escape(origin or DEFAULT_ORIGIN, quote=True)}">
 <label>Direction the truck faces when it sets off (stops illegal U-turns at the start)</label>
 <select name=heading>{''.join(f'<option value={k}>{k if k != "any" else "Any (let the router choose)"}</option>' for k in HEADINGS)}</select><br>
 <label>Trip</label><select name=direction><option value=outbound>Outbound (start to destination)</option>
-<option value=return>Return (destination to start)</option></select><br>
+<option value=return{" selected" if direction == "return" else ""}>Return (destination to start)</option></select><br>
 <button>Plan primary and secondary routes</button></form>
 <h3>Recent runs</h3><ul>{past or '<li class=muted>None yet</li>'}</ul>
 <p class=muted>{keys} | <a href=/logout>Log out</a></p>""")
@@ -211,10 +211,19 @@ def show_run(request: Request, run_id: str, error: str = ""):
                      f"(right click the spot in Google Maps and copy the numbers).</p>")
     first = run["routes"]["primary"]["data"]["rows"][0]["road"]
     last = run["routes"]["primary"]["data"]["rows"][-1]["road"]
-    ends = (f"<p><b>Start:</b> {escape(o['label'])} <a href='{geo.map_link(o['lat'], o['lon'])}' target=_blank>map</a> | "
-            f"<a href='{geo.sv_link(o['lat'], o['lon'])}' target=_blank>Street View</a> (route leaves on <b>{escape(first)}</b>)<br>"
-            f"<b>End:</b> {escape(d['label'])} <a href='{geo.map_link(d['lat'], d['lon'])}' target=_blank>map</a> | "
-            f"<a href='{geo.sv_link(d['lat'], d['lon'])}' target=_blank>Street View</a> (route arrives on <b>{escape(last)}</b>)</p>")
+    def alts(pt, which):
+        out = []
+        for a in pt.get("others", []):
+            o2 = f"{a['lat']:.5f}, {a['lon']:.5f}" if which == "origin" else f"{run['origin']['lat']:.5f}, {run['origin']['lon']:.5f}"
+            d2 = f"{a['lat']:.5f}, {a['lon']:.5f}" if which == "dest" else f"{run['dest']['lat']:.5f}, {run['dest']['lon']:.5f}"
+            out.append(f"<a href='/?origin={quote(o2)}&dest={quote(d2)}&direction={run['direction']}'>{escape(a['label'][:70])}</a>")
+        return ("<br><span class=muted>Not the right place? Plan again using: " + " | ".join(out) + "</span>") if out else ""
+    ro, rd = run["origin"], run["dest"]
+    ends = (f"<p><b>Start:</b> you typed <i>{escape(ro['text'])}</i>, TomTom matched <b>{escape(ro['label'])}</b> <code>{geo.coords(ro['lat'], ro['lon'])}</code> "
+            f"<a href='{geo.map_link(ro['lat'], ro['lon'])}' target=_blank>map</a> | <a href='{geo.sv_link(ro['lat'], ro['lon'])}' target=_blank>Street View</a>{alts(ro, 'origin')}<br>"
+            f"<b>End:</b> you typed <i>{escape(rd['text'])}</i>, TomTom matched <b>{escape(rd['label'])}</b> <code>{geo.coords(rd['lat'], rd['lon'])}</code> "
+            f"<a href='{geo.map_link(rd['lat'], rd['lon'])}' target=_blank>map</a> | <a href='{geo.sv_link(rd['lat'], rd['lon'])}' target=_blank>Street View</a>{alts(rd, 'dest')}<br>"
+            f"<span class=muted>Route leaves on <b>{escape(first)}</b> and arrives on <b>{escape(last)}</b>. Direction: {run['direction']}. Run {run['id']}.</span></p>")
     pv = "\n".join(v["text"] for v in run["routes"]["primary"]["vias"])
     sv = "\n".join(v["text"] for v in (run["routes"]["secondary"] or {"vias": []})["vias"])
     pic = (f"<h3>Route preview</h3><img src='/run/{run['id']}/map/preview.png' style='max-width:100%;border:1px solid #bbb'>" if run.get("preview") else

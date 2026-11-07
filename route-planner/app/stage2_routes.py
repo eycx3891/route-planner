@@ -47,7 +47,8 @@ def hazard_row(h, run, label) -> str:
     loc = ""
     if h.get("lat") is not None:
         loc = (f"<code>{geo.coords(h['lat'], h['lon'])}</code><br><a href='{geo.map_link(h['lat'], h['lon'])}' target=_blank>Map</a> | "
-               f"<a href='{geo.sv_link(h['lat'], h['lon'], h.get('heading', 0), h.get('pano'))}' target=_blank>Street View</a>")
+               f"<a href='{geo.sv_link(h['lat'], h['lon'], h.get('heading', 0), h.get('pano'))}' target=_blank>Street View</a>"
+               + (f" | <a href='/run/{run['id']}/view/{h['view']}.jpg' target=_blank>What the model saw</a>" if h.get("view") else ""))
     lm = f"<br><span class=muted>Landmark: {escape(h['landmark'])}</span>" if h.get("landmark") else ""
     danger = ""
     todo = []
@@ -165,6 +166,19 @@ def stage2_page(request: Request, run_id: str, error: str = ""):
     body += f"<form method=post action=/run/{run_id}/stage2/approve><button>Approve Gate 2 (danger areas)</button></form>"
     body += f"<form method=get action=/run/{run_id}/stage3><button>Go to Stage 3: revised times</button></form>"
     return page(body)
+
+
+@router.get("/run/{run_id}/view/{name}.jpg")
+def view_image(request: Request, run_id: str, name: str):
+    """The exact image (with the yellow path line) that the model was shown for a danger area."""
+    if (r := login_needed(request)):
+        return r
+    import re
+    from fastapi.responses import Response
+    if not re.match(r"^[0-9a-f]{16}$", name) or not store.ID_RE.match(run_id):
+        return Response(status_code=404)
+    data = store.load_blob(f"views/{run_id}/{name}.jpg")
+    return Response(content=data, media_type="image/jpeg") if data else Response(status_code=404)
 
 
 @router.post("/run/{run_id}/stage2/start")

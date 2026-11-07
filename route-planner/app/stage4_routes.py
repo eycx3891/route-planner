@@ -75,7 +75,7 @@ def stopped_table(run, rn, hazards, colour, title) -> str:
                    f"<a href='{geo.map_link(s['lat'], s['lon'])}' target=_blank>map</a> | <a href='{geo.sv_link(s['lat'], s['lon'], 0, (s.get('sv') or {}).get('pano'))}' target=_blank>Street View</a></p>"
                    f"<p><b>Status:</b> <b class={'ok' if label == 'ACCEPTABLE' else 'hz'}>{label}</b></p>{('<ul>' + unres + '</ul>') if unres else ''}"
                    f"<p><b>Approach:</b> {ing}. U-turn check: {a3['status']}.<br><b>Exit and re-entry:</b> {egr}. U-turn check: {a5['status']}.</p>"
-                   f"<p class=muted>Imagery notes ({escape(sv.get('date', 'no date'))}): kind {escape(str(sv.get('kind', '?')))}, space {escape(str(sv.get('space', '?')))}, "
+                   f"<p class=muted>Street View notes: kind {escape(str(sv.get('kind', '?')))}, space {escape(str(sv.get('space', '?')))}, "
                    f"barrier seen: {sv.get('barrier', '?')}. {escape(str(sv.get('notes', '')))}</p></div>")
     return (f"<div class={colour}><h3>{title} with rest stops</h3>{unclean}{reps}<table><tr><th>#</th><th>Road</th><th>First action</th><th>Distance</th>"
             f"<th>Baseline time</th><th>REVISED TRAVEL TIME</th><th>Danger areas</th></tr>{body}"

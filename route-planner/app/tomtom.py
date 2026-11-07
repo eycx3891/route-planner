@@ -49,13 +49,21 @@ def geocode(text: str) -> dict:
     if xy:
         return {"text": text, "label": f"Coordinates {xy[0]:.5f}, {xy[1]:.5f} (entered by you)", "lat": xy[0], "lon": xy[1]}
     data = _get(f"/search/2/search/{quote(text)}.json",
-                [("key", _key()), ("countrySet", "SG"), ("limit", 1), ("typeahead", "false")])
+                [("key", _key()), ("countrySet", "SG"), ("limit", 5), ("typeahead", "false")])
     results = data.get("results") or []
     if not results:
         raise TomTomError(f"No match found for: {text}")
     top = results[0]
-    return {"text": text, "label": top.get("address", {}).get("freeformAddress", text),
-            "lat": top["position"]["lat"], "lon": top["position"]["lon"]}
+    others, seen = [], {(round(top["position"]["lat"], 4), round(top["position"]["lon"], 4))}
+    for r in results[1:]:
+        k = (round(r["position"]["lat"], 4), round(r["position"]["lon"], 4))
+        if k not in seen:
+            seen.add(k)
+            poi = (r.get("poi") or {}).get("name", "")
+            lab = r.get("address", {}).get("freeformAddress", "")
+            others.append({"label": f"{poi}, {lab}".strip(", ") or text, "lat": r["position"]["lat"], "lon": r["position"]["lon"]})
+    return {"text": text, "label": top.get("address", {}).get("freeformAddress", text), "lat": top["position"]["lat"], "lon": top["position"]["lon"],
+            "others": others[:3], "matched_name": (top.get("poi") or {}).get("name", "")}
 
 
 def calculate(points: list, alternatives: int = 0, route_type: str = "fastest", heading=None) -> dict:

@@ -14,7 +14,8 @@ CATS = {1: "Roadworks", 2: "Lane closure", 3: "Temporary signals", 4: "Tight tur
         10: "Entrance or emerging vehicles", 11: "Operator-designated", 12: "Current incident"}
 
 SYSTEM = """You screen ONE Singapore Street View image for a route planning exercise. A long garbage truck will drive this route late at night, when the roads are almost empty.
-Each image comes with a line "THE TRUCK IS: ..." saying exactly what the truck does at this point. Judge ONLY dangers that affect that action.
+Each image comes with a line "THE TRUCK IS: ..." saying exactly what the truck does at this point.
+A thin YELLOW LINE with a black edge is drawn on the road: it is the exact path the truck takes, starting at the camera, with an orange arrowhead at its far end. That is how you know where the truck is and where it is going. Judge ONLY what is on or beside that line and affects the truck's action. If the line turns, the truck turns there; if it follows a ramp, the truck takes that ramp. Ignore other roads, ramps and lanes the line does not use. The line is approximate (flat road assumed).
 NEVER report: traffic, queues, parked or moving vehicles (including other large trucks and buses), pedestrians, weather, lighting, or anything that is only a condition of this photo.
 NEVER mistake petrol stations, showrooms, shops, ordinary buildings or hoardings for roadworks. Report roadworks only if you see cones, barriers or hoarding on the carriageway, excavation, or a roadworks sign.
 Rules by what the truck is doing:
@@ -176,6 +177,7 @@ def compose(system: str, user_text: str) -> list:
 
 
 NAV_SYSTEM = """You help write a driver reference for a long garbage truck in Singapore. Each segment gives Street View images that look forward along a road towards the next manoeuvre, plus what the truck must do at that manoeuvre.
+A thin YELLOW LINE with a black edge on the road is the exact path the truck takes from the camera, so you know where the truck is and where it is going. The lane the truck needs is the lane whose arrows lead onto that line's path through the manoeuvre.
 Work out ONLY from what is visible:
 1. lane_count: lanes in the truck's direction near the manoeuvre (null if unclear).
 2. lane_for_next: the lane the truck should be in for the manoeuvre, counted from the LEFT (1 = leftmost), using lane arrows, markings or lane signs. null if they do not show it. If several lanes allow the manoeuvre give the leftmost.
@@ -183,9 +185,10 @@ Work out ONLY from what is visible:
 4. filter_cue: where the driver should start moving into that lane: ONE landmark visible in the far view, e.g. "the blue overhead sign reading Mandai Rd" or "the grey 10 storey HDB block on the left". "" if none good.
 5. turn_cue: what tells the driver the turn or exit is NOW: one landmark in the near view, plus a count of traffic lights only if clearly visible. "" if none good.
 6. note: one short sentence the driver must know (max 20 words), or "".
+7. over: if the yellow line goes up onto and over a flyover or bridge, say so in a few words (for example "goes over the flyover above the expressway"), otherwise "".
 Good landmarks: overhead gantry or road signs with readable text, named or distinctive buildings (colour, type, side), petrol stations (brand), bridges or flyovers, bus interchanges, MRT stations, shelters with readable names, a counted traffic light. Always say whether it is on the left or right.
 NEVER use trees, plants, lamp posts, poles, fences, road markings, kerbs, vehicles, people, shadows, sky, or vague things like "a building". If nothing good is visible give "". Do not guess. If the images are blocked or unclear set usable=false.
-Return ONLY a JSON array with one object per segment in the same order, keys: id, usable (bool), lane_count, lane_for_next, lane_basis, filter_cue, turn_cue, note."""
+Return ONLY a JSON array with one object per segment in the same order, keys: id, usable (bool), lane_count, lane_for_next, lane_basis, filter_cue, turn_cue, note, over."""
 
 
 def nav_screen(items: list) -> dict:
@@ -214,8 +217,8 @@ def nav_screen(items: list) -> dict:
             lane = None
         basis = str(x.get("lane_basis", "none")).lower()
         out[x["id"]] = {"usable": bool(x.get("usable")), "lane_count": cnt, "lane_for_next": lane if basis != "none" else None,
-                        "lane_basis": basis, "filter_cue": str(x.get("filter_cue", ""))[:120], "turn_cue": str(x.get("turn_cue", ""))[:140],
+                        "lane_basis": basis, "over": str(x.get("over", ""))[:100], "filter_cue": str(x.get("filter_cue", ""))[:120], "turn_cue": str(x.get("turn_cue", ""))[:140],
                         "note": str(x.get("note", ""))[:160]}
     for i in items:
-        out.setdefault(i["id"], {"usable": False, "lane_count": None, "lane_for_next": None, "lane_basis": "none", "filter_cue": "", "turn_cue": "", "note": ""})
+        out.setdefault(i["id"], {"usable": False, "lane_count": None, "lane_for_next": None, "lane_basis": "none", "over": "", "filter_cue": "", "turn_cue": "", "note": ""})
     return out
