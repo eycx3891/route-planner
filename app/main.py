@@ -228,8 +228,7 @@ def show_run(request: Request, run_id: str, error: str = ""):
     sv = "\n".join(v["text"] for v in (run["routes"]["secondary"] or {"vias": []})["vias"])
     pic = (f"<h3>Route preview</h3><img src='/run/{run['id']}/map/preview.png' style='max-width:100%;border:1px solid #bbb'>" if run.get("preview") else
            (f"<p class=muted>Preview not available: {escape(run.get('preview_error') or 'enable Maps Static API on your Google key')}</p>"))
-    pic += (f"<p><a href='{stage6.gmaps_link(run)}' target=_blank>Open this trip in Google Maps</a> "
-            "<span class=muted>(approximate: Google may pick a slightly different road)</span></p>")
+    pic += f"<p>{stage6.gmaps_links(run)}</p>"
     return page(f"""{nav(run, 1)}<h2>{escape(o['label'])}<br>to {escape(d['label'])}</h2>
 <p class=muted>Run {run['id']} | version {run['version']} | {run['direction']} | baseline = TomTom, tunnels avoided, no live traffic</p>
 {status}{err}{ends}{warn}

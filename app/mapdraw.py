@@ -11,7 +11,7 @@ from . import geo, store
 
 CSS, SC = 640, 2
 W = CSS * SC
-HDR = 92
+HDR = 112
 SS = 2  # lines are drawn at twice the size and shrunk, which removes the jagged edges
 BLUE, RED, ORANGE, DARK = (26, 86, 219), (214, 42, 42), (245, 130, 13), (40, 40, 40)
 
@@ -33,12 +33,17 @@ def unproj(x, y, z):
     return lat, lon
 
 
+def fits_at(points, z, pad_css=70) -> bool:
+    xs, ys = zip(*[proj(la, lo, z) for la, lo in points])
+    return max(xs) - min(xs) <= CSS - 2 * pad_css and max(ys) - min(ys) <= CSS - 2 * pad_css
+
+
 def fit(points, pad_css=70, zmax=18, zmin=8):
     """Centre and largest zoom at which all points fit inside the 640 css px map with a margin."""
     for z in range(zmax, zmin - 1, -1):
-        xs, ys = zip(*[proj(la, lo, z) for la, lo in points])
-        if max(xs) - min(xs) <= CSS - 2 * pad_css and max(ys) - min(ys) <= CSS - 2 * pad_css:
+        if fits_at(points, z, pad_css):
             break
+    xs, ys = zip(*[proj(la, lo, z) for la, lo in points])
     cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
     return unproj(cx, cy, z), z
 
@@ -61,12 +66,12 @@ def fetch_base(center, z):
     key = os.environ.get("GOOGLE_KEY")
     if not key:
         raise MapError("GOOGLE_KEY is not set")
-    cache = "maps/base/" + hashlib.md5(f"{center[0]:.5f},{center[1]:.5f},{z}".encode()).hexdigest() + ".png"
+    cache = "maps/base/" + hashlib.md5(f"{center[0]:.5f},{center[1]:.5f},{z},v2".encode()).hexdigest() + ".png"
     hit = store.load_blob(cache)
     if hit:
         return Image.open(io.BytesIO(hit)).convert("RGB")
     params = [("center", f"{center[0]:.6f},{center[1]:.6f}"), ("zoom", z), ("size", f"{CSS}x{CSS}"), ("scale", SC), ("maptype", "roadmap"),
-              ("style", "feature:poi|visibility:off"), ("style", "feature:transit|visibility:off"), ("key", key)]
+              ("style", "feature:poi|visibility:off"), ("style", "feature:transit|visibility:off"), ("style", "feature:road|element:labels.icon|visibility:off"), ("key", key)]
     try:
         r = httpx.get("https://maps.googleapis.com/maps/api/staticmap", params=params, timeout=40)
     except httpx.HTTPError as e:
@@ -78,6 +83,8 @@ def fetch_base(center, z):
 
 
 class Canvas:
+    """Draws over one Google map picture. Danger areas, rest stops and tags are neat boxes with thin leader lines that never overlap."""
+
     def __init__(self, base, center, z):
         self.im = base.convert("RGBA")
         self.center, self.z = center, z
@@ -86,7 +93,8 @@ class Canvas:
         self.layer = Image.new("RGBA", (W * SS, W * SS), (0, 0, 0, 0))
         self.ld = ImageDraw.Draw(self.layer)
         self.placed = []
-        self.drawn = {"hazards": [], "stops": [], "insets": [], "routes": [], "circles": {}, "ends": []}
+        self.pending = []
+        self.drawn = {"hazards": [], "stops": [], "routes": [], "circles": {}, "ends": [], "overlaps": 0}
 
     def px(self, lat, lon):
         x, y = proj(lat, lon, self.z)
@@ -95,48 +103,19 @@ class Canvas:
     def inside(self, p, m=0):
         return -m <= p[0] <= W + m and -m <= p[1] <= W + m
 
-    def box_free(self, b):
-        return all(b[2] < o[0] or b[0] > o[2] or b[3] < o[1] or b[1] > o[3] for o in self.placed)
-
-    def text(self, xy, s, size, fg, bold=False):
-        f = font(size)
-        for dx in (-3, 0, 3):
-            for dy in (-3, 0, 3):
-                self.d.text((xy[0] + dx, xy[1] + dy), s, font=f, fill=(255, 255, 255, 255))
-        self.d.text(xy, s, font=f, fill=fg + (255,))
-        if bold:
-            self.d.text((xy[0] + 1, xy[1]), s, font=f, fill=fg + (255,))
-
-    def label(self, anchor, s, size, fg, offsets, bold=True):
-        f = font(size)
-        bb = self.d.textbbox((0, 0), s, font=f)
-        w, h = bb[2] - bb[0], bb[3] - bb[1]
-        for dx, dy in offsets:
-            x, y = anchor[0] + dx, anchor[1] + dy
-            box = (x - 4, y - 4, x + w + 4, y + h + 8)
-            if box[0] >= 0 and box[1] >= 0 and box[2] <= W and box[3] <= W and self.box_free(box):
-                self.placed.append(box)
-                self.text((x, y), s, size, fg, bold)
-                return True
-        x, y = anchor[0] + offsets[0][0], anchor[1] + offsets[0][1]
-        self.placed.append((x - 4, y - 4, x + w + 4, y + h + 8))
-        self.text((x, y), s, size, fg, bold)
-        return False
-
+    # ---- the route line: solid, thin, no border ----
     def line(self, pts_latlon, colour, width):
-        """Route line with a white edge and round ends, drawn on the large layer for clean anti-aliased edges."""
         pts = [self.px(p[0], p[1]) for p in pts_latlon]
         big = [(x * SS, y * SS) for x, y in pts]
         if len(big) > 1:
-            for w, c in ((width + 9, (255, 255, 255, 255)), (width, colour + (255,))):
-                self.ld.line(big, fill=c, width=int(w * SS), joint="curve")
-                for e in (big[0], big[-1]):
-                    r = w * SS / 2
-                    self.ld.ellipse([e[0] - r, e[1] - r, e[0] + r, e[1] + r], fill=c)
+            c = colour + (255,)
+            self.ld.line(big, fill=c, width=int(width * SS), joint="curve")
+            for e in (big[0], big[-1]):
+                r = width * SS / 2
+                self.ld.ellipse([e[0] - r, e[1] - r, e[0] + r, e[1] + r], fill=c)
         return pts
 
-    def chevrons(self, pts, every=420):
-        """Small white direction marks on the line."""
+    def chevrons(self, pts, every=640):
         acc = 0.0
         for a, b in zip(pts, pts[1:]):
             seg = math.hypot(b[0] - a[0], b[1] - a[1])
@@ -146,8 +125,8 @@ class Canvas:
                 ang = math.atan2(b[1] - a[1], b[0] - a[0])
                 for sgn in (1, -1):
                     tip = (b[0] * SS, b[1] * SS)
-                    tail = ((b[0] - 11 * math.cos(ang + sgn * 0.7)) * SS, (b[1] - 11 * math.sin(ang + sgn * 0.7)) * SS)
-                    self.ld.line([tail, tip], fill=(255, 255, 255, 255), width=4 * SS)
+                    tail = ((b[0] - 10 * math.cos(ang + sgn * 0.7)) * SS, (b[1] - 10 * math.sin(ang + sgn * 0.7)) * SS)
+                    self.ld.line([tail, tip], fill=(255, 255, 255, 255), width=3 * SS)
 
     def flush_lines(self):
         small = self.layer.resize((W, W), Image.LANCZOS)
@@ -156,61 +135,111 @@ class Canvas:
         self.layer = Image.new("RGBA", (W * SS, W * SS), (0, 0, 0, 0))
         self.ld = ImageDraw.Draw(self.layer)
 
-    def circle(self, lat, lon, colour, text, radius=34, size=34, kind="hazards"):
+    # ---- neat boxes ----
+    def _free(self, box, pad=10):
+        if box[0] < 8 or box[1] < 8 or box[2] > W - 8 or box[3] > W - 8:
+            return False
+        return all(box[2] + pad < o[0] or box[0] - pad > o[2] or box[3] + pad < o[1] or box[1] - pad > o[3] for o in self.placed)
+
+    def ring(self, p, colour, radius=15):
+        self.d.ellipse([p[0] - radius, p[1] - radius, p[0] + radius, p[1] + radius], outline=colour + (255,), width=5)
+        self.placed.append((p[0] - radius - 4, p[1] - radius - 4, p[0] + radius + 4, p[1] + radius + 4))
+
+    def box(self, anchor, text, fill, size=34, leader=True, ring_r=15):
+        """Place a rounded box near `anchor` where nothing else is, then join it to the spot with a thin line."""
+        f = font(size)
+        bb = self.d.textbbox((0, 0), text, font=f)
+        w, h = bb[2] - bb[0] + 30, size + 24
+        chosen = None
+        prefer = (-50, -130, 40, 140, -90, 90, 0, 180, -20, -160, 20, 160, -70, -110, 70, 110, -30, -150, 30, 150, -10, -170, 10, 170, -60, -120, 60, 120, -80, -100, 80, 100)
+        for r in (ring_r + 60, ring_r + 100, ring_r + 145, ring_r + 195, ring_r + 255, ring_r + 330, ring_r + 420, ring_r + 520):
+            for ang in prefer:
+                a = math.radians(ang)
+                x, y = anchor[0] + r * math.cos(a) - w / 2, anchor[1] + r * math.sin(a) - h / 2
+                if self._free((x, y, x + w, y + h)):
+                    chosen = (x, y)
+                    break
+            if chosen:
+                break
+        if not chosen:
+            a = math.radians(-50)
+            x, y = anchor[0] + (ring_r + 60) * math.cos(a) - w / 2, anchor[1] + (ring_r + 60) * math.sin(a) - h / 2
+            chosen = (min(max(x, 8), W - w - 8), min(max(y, 8), W - h - 8))  # never off the picture
+            self.drawn["overlaps"] += 1
+        x, y = chosen
+        if leader:
+            px_, py_ = min(max(anchor[0], x), x + w), min(max(anchor[1], y), y + h)
+            self.d.line([(anchor[0], anchor[1]), (px_, py_)], fill=fill + (255,), width=3)
+        self.d.rounded_rectangle([x, y, x + w, y + h], radius=9, fill=fill + (255,), outline=(255, 255, 255, 255), width=2)
+        self.d.text((x + 15, y + 9), text, font=f, fill=(255, 255, 255, 255))
+        self.placed.append((x, y, x + w, y + h))
+
+    def add_marker(self, lat, lon, text, colour, kind, size=34):
+        """Queue a marker. Drawn later in route order so the first ones get the best spots."""
         p = self.px(lat, lon)
         if not self.inside(p):
             return False
-        self.d.ellipse([p[0] - radius, p[1] - radius, p[0] + radius, p[1] + radius], outline=colour + (255,), width=7)
-        self.placed.append((p[0] - radius, p[1] - radius, p[0] + radius, p[1] + radius))
-        self.label(p, text, size, colour, [(radius - 4, -radius - 30), (radius - 4, radius - 6), (-radius - 70, -radius - 30), (-radius - 70, radius - 6), (radius + 10, -10)])
-        self.drawn[kind].append(text)
-        self.drawn["circles"][text] = p
+        self.pending.append((p, text, colour, kind, size))
         return True
 
-    def dot(self, lat, lon, colour, text):
-        p = self.px(lat, lon)
-        if not self.inside(p):
-            return
-        self.d.ellipse([p[0] - 16, p[1] - 16, p[0] + 16, p[1] + 16], fill=colour + (255,), outline=(255, 255, 255, 255), width=4)
-        self.label(p, text, 30, colour, [(22, -44), (22, 8), (-90, -44)])
-        self.drawn["ends"].append(text)
-
-    def rect(self, bbox, text):
-        a = self.px(bbox[2], bbox[1])
-        b = self.px(bbox[0], bbox[3])
-        self.d.rectangle([a[0], a[1], b[0], b[1]], outline=DARK + (255,), width=5)
-        self.label((b[0], b[1]), text, 32, DARK, [(-60, 6), (6, 6), (-60, -48)])
-        self.drawn["insets"].append(text)
+    def draw_markers(self):
+        for p, text, colour, kind, size in self.pending:
+            if kind in ("hazards", "stops"):
+                self.ring(p, colour)
+        for p, text, colour, kind, size in self.pending:
+            if kind in ("hazards", "stops"):
+                self.box(p, text, colour, size)
+                self.drawn[kind].append(text)
+                self.drawn["circles"][text] = p
+            else:
+                self.d.ellipse([p[0] - 11, p[1] - 11, p[0] + 11, p[1] + 11], fill=colour + (255,), outline=(255, 255, 255, 255), width=3)
+                self.placed.append((p[0] - 13, p[1] - 13, p[0] + 13, p[1] + 13))
+                self.box(p, text, colour, size, ring_r=11)
+                if kind == "ends":
+                    self.drawn["ends"].append(text)
+        self.pending = []
 
     def road_labels(self, geom, rows, steps, colour, min_m=1500):
-        """Label long roads with their name beside the line."""
+        """Name long roads beside the line, only where there is room."""
         offs = [g[2] for g in geom]
+        f = font(26)
         for r in rows:
             if r["dist_m"] < min_m:
                 continue
-            start = steps[r["step"]]["off"]
-            mid = start + r["dist_m"] / 2
+            mid = steps[r["step"]]["off"] + r["dist_m"] / 2
             i = min(range(len(geom)), key=lambda k: abs(offs[k] - mid))
             p = self.px(geom[i][0], geom[i][1])
             q = self.px(geom[min(i + 3, len(geom) - 1)][0], geom[min(i + 3, len(geom) - 1)][1])
-            ang = math.atan2(q[1] - p[1], q[0] - p[0]) + math.pi / 2
-            if not self.inside(p, -40):
+            if not self.inside(p, -60):
                 continue
+            ang = math.atan2(q[1] - p[1], q[0] - p[0]) + math.pi / 2
             nx, ny = math.cos(ang), math.sin(ang)
             text = r["road"][:34]
-            bb = self.d.textbbox((0, 0), text, font=font(28))
-            w, h = bb[2] - bb[0], bb[3] - bb[1]
-            ext = abs(nx) * w / 2 + abs(ny) * h / 2 + 26
-            offsets = []
+            bb = self.d.textbbox((0, 0), text, font=f)
+            w, h = bb[2] - bb[0] + 20, 38
+            ext = abs(nx) * w / 2 + abs(ny) * h / 2 + 22
             for extra in (0, 60):
+                done = False
                 for sg in (1, -1):
-                    offsets.append((p[0] + sg * nx * (ext + extra) - w / 2 - p[0], p[1] + sg * ny * (ext + extra) - h / 2 - p[1]))
-            self.label(p, text, 28, colour, offsets, bold=False)
+                    cx, cy = p[0] + sg * nx * (ext + extra), p[1] + sg * ny * (ext + extra)
+                    box = (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+                    if self._free(box, 6):
+                        self.d.rounded_rectangle(box, radius=8, fill=(255, 255, 255, 225), outline=colour + (255,), width=2)
+                        self.d.text((box[0] + 10, box[1] + 4), text, font=f, fill=colour + (255,))
+                        self.placed.append(box)
+                        done = True
+                        break
+                if done:
+                    break
 
-    def finish(self, title):
-        out = Image.new("RGB", (W, W + HDR), (255, 255, 255))
-        out.paste(self.im.convert("RGB"), (0, HDR))
-        ImageDraw.Draw(out).text((24, 18), title[:70], font=font(46), fill=(20, 20, 20))
+    def finish(self, title, subtitle=""):
+        hdr = 112 if subtitle else 92
+        out = Image.new("RGB", (W, W + hdr), (255, 255, 255))
+        out.paste(self.im.convert("RGB"), (0, hdr))
+        d = ImageDraw.Draw(out)
+        d.text((24, 14), title[:80], font=font(44), fill=(20, 20, 20))
+        if subtitle:
+            d.text((24, 66), subtitle[:120], font=font(28), fill=(80, 80, 80))
         buf = io.BytesIO()
         out.save(buf, "PNG")
         return buf.getvalue()

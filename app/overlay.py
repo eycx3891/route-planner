@@ -1,4 +1,5 @@
 """Draws the truck's path onto a Street View image, so the model can see where the truck is and where it goes next."""
+import bisect
 import io
 import math
 
@@ -7,6 +8,17 @@ from PIL import Image, ImageDraw
 from . import geo
 
 CAM_H = 2.6  # metres: typical Street View camera height
+
+
+def cam_at(data, off):
+    """Camera position and heading (along the route) at a distance `off` metres along the route."""
+    g = data["geom"]
+    offs = [p[2] for p in g]
+    i = min(max(bisect.bisect_left(offs, off), 0), len(g) - 1)
+    j = min(i + 3, len(g) - 1)
+    if j == i:
+        i = max(i - 3, 0)
+    return g[i][0], g[i][1], round(geo.bearing(g[i][0], g[i][1], g[j][0], g[j][1]))
 
 
 def route_ahead(data, lat, lon, meters=170):

@@ -253,8 +253,8 @@ def landmarks_for(run, rn) -> dict:
 
 # ---------- candidate screening points ----------
 def key_of(lat, lon, heading, cls="") -> str:
-    """Cache key: the same spot is read again if the truck does something different there, or if the prompt changes (v2)."""
-    return f"{lat:.5f},{lon:.5f},{int(round(heading / 10.0) * 10) % 360}|{cls}|v2"
+    """Cache key: the same spot is read again if the truck does something different there, or if the prompt changes (v3)."""
+    return f"{lat:.5f},{lon:.5f},{int(round(heading / 10.0) * 10) % 360}|{cls}|v3"
 
 
 def candidates(run) -> list:
@@ -301,10 +301,19 @@ def _save(run):
 
 def _fetch(c):
     try:
-        m = streetview.metadata(c["lat"], c["lon"])
-        st = m.get("status", "")
-        if st in FATAL:
-            return c["key"], {"error": f"Street View says {st}: {m.get('error_message', 'check the Google key and that Street View Static API is enabled')}", "fatal": True, "status": st}, None
+        tries = [(c["lat"], c["lon"])]
+        if c.get("data"):
+            _, gi = geo.nearest(c["lat"], c["lon"], c["data"]["geom"])
+            off = c["data"]["geom"][gi][2]
+            tries += [overlay.cam_at(c["data"], off + d)[:2] for d in (-30, 30, -60, 60)]
+        m, st = {}, ""
+        for la, lo in tries:
+            m = streetview.metadata(la, lo)
+            st = m.get("status", "")
+            if st in FATAL:
+                return c["key"], {"error": f"Street View says {st}: {m.get('error_message', 'check the Google key and that Street View Static API is enabled')}", "fatal": True, "status": st}, None
+            if st == "OK":
+                break
         if st != "OK":
             return c["key"], {"nocov": True, "usable": False, "findings": [], "note": st, "status": st}, None
         loc = m.get("location") or {}
@@ -417,7 +426,7 @@ def observations(run) -> list:
             ev = f"Street View {res.get('date', '?')}"
             need = 3 if cls in STRICT else 2
             for f in res.get("findings", [])[:2]:
-                if SEV.get(f.get("severity", "low"), 1) >= need:
+                if SEV.get(f.get("severity", "low"), 1) >= need and not vision.is_live_condition(f.get("what"), f.get("risk"), f.get("precaution")):
                     obs.append(_obs(c, f["cat"], f["what"], f["risk"], f["precaution"], "vision", SEV[f["severity"]], ev))
             for o in res.get("overhead", []):
                 cl = o.get("clearance_m")

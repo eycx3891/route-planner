@@ -11,7 +11,7 @@ input[type=text]{width:100%;box-sizing:border-box}
 table{border-collapse:collapse;width:100%;margin:.5rem 0 1rem}
 th,td{border:1px solid #bbb;padding:.35rem .5rem;text-align:left;vertical-align:top;font-size:.92rem}
 th{background:#eee} tr.total td{font-weight:700;background:#f4f4f4}
-tr.bad td{background:#fdd} tr.detour td{background:#ffe0b8} tr.rest td{background:#ffb347;font-weight:700} .hz{color:#b00} .pill{display:inline-block;padding:0 .4rem;border:1px solid #b00;border-radius:1rem;color:#b00;font-weight:700}
+tr.bad td{background:#fdd} tr.seek td{background:#fff176} tr.ref td{background:#fafafa;font-size:.86rem} tr.detour td{background:#ffe0b8} tr.rest td{background:#ffb347;font-weight:700} .hz{color:#b00} .pill{display:inline-block;padding:0 .4rem;border:1px solid #b00;border-radius:1rem;color:#b00;font-weight:700}
 .g{font-family:monospace;text-align:center} .bub{display:inline-block;padding:.05rem .55rem;border-radius:1rem;font-size:.8rem;font-weight:700;margin:.1rem .2rem .1rem 0;white-space:nowrap} nav{margin:.4rem 0 1rem;padding:.4rem .6rem;background:#f1f3f5;border-radius:.5rem} nav a,nav span{margin-right:.9rem} details{margin:.5rem 0} .banner{padding:.6rem;border:2px solid #b00;color:#b00;font-weight:700;margin:.8rem 0}
 .ok{color:#080;font-weight:700} .muted{color:#666;font-size:.85rem}
 .blue{border-left:8px solid #2a6fd6;padding-left:.6rem} .red{border-left:8px solid #d62a2a;padding-left:.6rem}
@@ -102,4 +102,9 @@ def nav(run, current: int) -> str:
             out.append(f"<a href='/run/{rid}{paths[n]}'>{label}</a>")
         else:
             out.append(f"<span class=muted>{label}</span>")
-    return "<nav>" + "".join(out) + "<a href=/>Home</a></nav>"
+    strip = ""
+    if current != 1 and run.get("preview"):
+        from .stage6 import gmaps_links
+        strip = (f"<details open><summary><b>Overall route</b></summary><img src='/run/{rid}/map/preview.png' style='max-width:520px;border:1px solid #bbb'>"
+                 f"<p>{gmaps_links(run)}</p></details>")
+    return "<nav>" + "".join(out) + "<a href=/>Home</a></nav>" + strip

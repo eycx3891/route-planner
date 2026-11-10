@@ -1,6 +1,7 @@
 """Claude reads Street View images against the danger checklist. Only reports what is visible."""
 import base64
 import json
+import re
 import os
 import time
 
@@ -16,7 +17,7 @@ CATS = {1: "Roadworks", 2: "Lane closure", 3: "Temporary signals", 4: "Tight tur
 SYSTEM = """You screen ONE Singapore Street View image for a route planning exercise. A long garbage truck will drive this route late at night, when the roads are almost empty.
 Each image comes with a line "THE TRUCK IS: ..." saying exactly what the truck does at this point.
 A thin YELLOW LINE with a black edge is drawn on the road: it is the exact path the truck takes, starting at the camera, with an orange arrowhead at its far end. That is how you know where the truck is and where it is going. Judge ONLY what is on or beside that line and affects the truck's action. If the line turns, the truck turns there; if it follows a ramp, the truck takes that ramp. Ignore other roads, ramps and lanes the line does not use. The line is approximate (flat road assumed).
-NEVER report: traffic, queues, parked or moving vehicles (including other large trucks and buses), pedestrians, weather, lighting, or anything that is only a condition of this photo.
+The photo is OLD and is not live. NEVER report traffic, queues, slower or stopped or parked or moving vehicles (including other trucks and buses), pedestrians, weather, lighting, or anything that is only a condition of this photo. Do not mention vehicles or traffic at all.
 NEVER mistake petrol stations, showrooms, shops, ordinary buildings or hoardings for roadworks. Report roadworks only if you see cones, barriers or hoarding on the carriageway, excavation, or a roadworks sign.
 Rules by what the truck is doing:
 - "continue straight" or "set off" or "arrive": slip roads, merges, exits, lane arrows and junctions to the side do NOT matter, even on flyovers and expressways. Report only roadworks or a closure in the truck's own lanes, a tunnel or underpass entrance ahead, or a clear hazard directly in its path. Usually report nothing.
@@ -31,6 +32,15 @@ id (string), usable (bool), findings (list of {cat:int, what:string<=14 words de
 lanes (string<=25 words: lane arrows or markings visible ahead, or "not visible"), signals (bool), slip (bool: a slip road is visible), junction ("none"|"small"|"medium"|"large"),
 overhead (list of {what:string<=8 words, clearance_m:number or null} for EVERY bridge, flyover or overpass the road passes under; read any posted clearance sign such as "4.5m", otherwise null),
 landmarks (up to 3 permanent things a driver could recognise, each with colour, type and side, e.g. "grey 10 storey HDB block on the left", "blue overhead sign reading Mandai Rd". Never trees, plants, lamp posts, poles, fences, road markings, vehicles or people)."""
+
+
+BANNED = re.compile(r"\b(vehicles?|cars?|buses|bus|lorr(?:y|ies)|vans?|motorcycles?|motorbikes?|trucks|another truck|other truck|a truck ahead|(?:heavy|slow|busy|moving|dense)\s+traffic|traffic\s+(?:jams?|flow|queues?|congestion|volume|ahead|buildup)|queues?|queuing|queued|congest\w*|"
+                    r"slower|slow-moving|stationary|stopped|parked|pedestrians?|people|cyclists?|jam|jammed|crowd\w*)\b", re.I)
+
+
+def is_live_condition(*texts) -> bool:
+    """True if the text describes traffic, other vehicles or people. The photo is old, so none of that counts."""
+    return any(BANNED.search(t or "") for t in texts)
 
 
 class VisionError(Exception):
@@ -97,7 +107,7 @@ def _parse(text: str, items: list) -> dict:
                     c = int(f.get("cat"))
                 except (TypeError, ValueError):
                     continue
-                if c in CATS and c not in (8, 11, 12):
+                if c in CATS and c not in (8, 11, 12) and not is_live_condition(f.get("what"), f.get("risk"), f.get("precaution")):
                     fs.append({"cat": c, "what": str(f.get("what", ""))[:160], "risk": str(f.get("risk", ""))[:160],
                                "precaution": str(f.get("precaution", ""))[:160], "severity": str(f.get("severity", "low")).lower()})
             out[x["id"]] = {"usable": bool(x.get("usable", True)), "findings": fs, "lanes": str(x.get("lanes", ""))[:200],
@@ -176,49 +186,61 @@ def compose(system: str, user_text: str) -> list:
     return _json_array(_ask(system, [{"type": "text", "text": user_text}], 12000))
 
 
-NAV_SYSTEM = """You help write a driver reference for a long garbage truck in Singapore. Each segment gives Street View images that look forward along a road towards the next manoeuvre, plus what the truck must do at that manoeuvre.
-A thin YELLOW LINE with a black edge on the road is the exact path the truck takes from the camera, so you know where the truck is and where it is going. The lane the truck needs is the lane whose arrows lead onto that line's path through the manoeuvre.
-Work out ONLY from what is visible:
-1. lane_count: lanes in the truck's direction near the manoeuvre (null if unclear).
-2. lane_for_next: the lane the truck should be in for the manoeuvre, counted from the LEFT (1 = leftmost), using lane arrows, markings or lane signs. null if they do not show it. If several lanes allow the manoeuvre give the leftmost.
-3. lane_basis: "arrows" | "signs" | "markings" | "none".
-4. filter_cue: where the driver should start moving into that lane: ONE landmark visible in the far view, e.g. "the blue overhead sign reading Mandai Rd" or "the grey 10 storey HDB block on the left". "" if none good.
-5. turn_cue: what tells the driver the turn or exit is NOW: one landmark in the near view, plus a count of traffic lights only if clearly visible. "" if none good.
-6. note: one short sentence the driver must know (max 20 words), or "".
-7. over: if the yellow line goes up onto and over a flyover or bridge, say so in a few words (for example "goes over the flyover above the expressway"), otherwise "".
+NAV_SYSTEM = """You help write a driver reference for a long garbage truck in Singapore. Each image is an OLD Street View photo (not live) looking forward along a road.
+A thin YELLOW LINE with a black edge is drawn on the road: it is the exact path the truck takes from the camera, so you know where the truck is and where it goes. The line is approximate (flat road assumed).
+The truck keeps to the LEFTMOST lane. Report ONLY what is visible. Never mention traffic, vehicles, queues or people.
+For each image give:
+- usable (bool): false if the view is blocked, dark or unclear.
+- lane_count: lanes going the truck's way (null if you cannot tell).
+- exit_ahead: an exit, slip road, branch or merge visible ahead that the yellow line does NOT take, with readable sign text and its side, e.g. "Exit 27 to Clementi Ave 6 on the left (green overhead sign)". "" if none.
+- leftmost_lane_exits (bool): true if the LEFTMOST lane is forced off the main road ahead (exit only lane, a left turn or exit arrow in the leftmost lane, a lane drop on the left) and the yellow line does NOT follow that exit. Otherwise false.
+- lane_for_next: ONLY for views marked far or near: the lane the truck needs for the next manoeuvre, counted from the LEFT (1 = leftmost), from lane arrows, markings or signs; null if they do not show it.
+- lane_basis: "arrows" | "signs" | "markings" | "none".
+- filter_cue: ONLY for far views: ONE landmark showing where to start moving over. "" if none good.
+- turn_cue: ONLY for near views: ONE landmark showing the turn or exit is NOW, plus a count of traffic lights only if clearly visible. "" if none good.
+- landmark: ONE permanent landmark in view (any view). "" if none good.
+- over: if the yellow line goes up onto and over a flyover or bridge, say so in a few words, else "".
+- note: one short sentence the driver must know (max 20 words), or "".
 Good landmarks: overhead gantry or road signs with readable text, named or distinctive buildings (colour, type, side), petrol stations (brand), bridges or flyovers, bus interchanges, MRT stations, shelters with readable names, a counted traffic light. Always say whether it is on the left or right.
-NEVER use trees, plants, lamp posts, poles, fences, road markings, kerbs, vehicles, people, shadows, sky, or vague things like "a building". If nothing good is visible give "". Do not guess. If the images are blocked or unclear set usable=false.
-Return ONLY a JSON array with one object per segment in the same order, keys: id, usable (bool), lane_count, lane_for_next, lane_basis, filter_cue, turn_cue, note, over."""
+NEVER use trees, plants, lamp posts, poles, fences, road markings, kerbs, vehicles, people, shadows, sky, or vague things like "a building". If nothing good is visible give "". Do not guess.
+Return ONLY a JSON array with one object per image in the same order, keys: id, usable, lane_count, exit_ahead, leftmost_lane_exits, lane_for_next, lane_basis, filter_cue, turn_cue, landmark, over, note."""
 
 
 def nav_screen(items: list) -> dict:
-    """items: [{id, context, views:[{label, jpeg}]}]. Returns {id: result}."""
+    """items: [{id, context, views:[{label, jpeg}]}] (one image each). Returns {id: result}."""
     content = []
     for it in items:
-        content.append({"type": "text", "text": f"Segment id: {it['id']}. {it['context']}"})
-        for v in it["views"]:
-            content.append({"type": "text", "text": f"Image: {v['label']}"})
-            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(v["jpeg"]).decode()}})
+        content.append({"type": "text", "text": f"Image id: {it['id']}. {it['context']}"})
+        for vw in it["views"]:
+            content.append({"type": "text", "text": f"This is the {vw['label']}."})
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(vw["jpeg"]).decode()}})
     content.append({"type": "text", "text": "Return the JSON array now."})
     ids = {i["id"] for i in items}
     out = {}
+
+    def clean(x, k, n):
+        t = str(x.get(k, "") or "")[:n].strip()
+        return "" if is_live_condition(t) else t
+
     for x in _json_array(_ask(NAV_SYSTEM, content, 6000)):
         if not isinstance(x, dict) or x.get("id") not in ids:
             continue
 
-        def num(k):
+        def num(k, hi=12):
             try:
                 n = int(x.get(k))
-                return n if 1 <= n <= 12 else None
+                return n if 1 <= n <= hi else None
             except (TypeError, ValueError):
                 return None
         cnt, lane = num("lane_count"), num("lane_for_next")
         if cnt and lane and lane > cnt:
             lane = None
         basis = str(x.get("lane_basis", "none")).lower()
-        out[x["id"]] = {"usable": bool(x.get("usable")), "lane_count": cnt, "lane_for_next": lane if basis != "none" else None,
-                        "lane_basis": basis, "over": str(x.get("over", ""))[:100], "filter_cue": str(x.get("filter_cue", ""))[:120], "turn_cue": str(x.get("turn_cue", ""))[:140],
-                        "note": str(x.get("note", ""))[:160]}
+        out[x["id"]] = {"usable": bool(x.get("usable")), "lane_count": cnt, "lane_for_next": lane if basis != "none" else None, "lane_basis": basis,
+                        "exit_ahead": clean(x, "exit_ahead", 140), "leftmost_lane_exits": bool(x.get("leftmost_lane_exits")),
+                        "filter_cue": clean(x, "filter_cue", 120), "turn_cue": clean(x, "turn_cue", 140), "landmark": clean(x, "landmark", 120),
+                        "over": clean(x, "over", 100), "note": clean(x, "note", 160)}
     for i in items:
-        out.setdefault(i["id"], {"usable": False, "lane_count": None, "lane_for_next": None, "lane_basis": "none", "over": "", "filter_cue": "", "turn_cue": "", "note": ""})
+        out.setdefault(i["id"], {"usable": False, "lane_count": None, "lane_for_next": None, "lane_basis": "none", "exit_ahead": "", "leftmost_lane_exits": False,
+                                 "filter_cue": "", "turn_cue": "", "landmark": "", "over": "", "note": ""})
     return out

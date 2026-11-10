@@ -19,7 +19,7 @@ def _key() -> str:
 
 
 def metadata(lat: float, lon: float) -> dict:
-    r = httpx.get(META, params={"location": f"{lat},{lon}", "source": "outdoor", "radius": 40, "key": _key()}, timeout=30)
+    r = httpx.get(META, params={"location": f"{lat},{lon}", "source": "outdoor", "radius": 60, "key": _key()}, timeout=30)
     if r.status_code != 200:
         raise StreetViewError(f"Street View metadata error {r.status_code}: {r.text[:200]}")
     return r.json()  # status, date (YYYY-MM), pano_id, location
