@@ -1,7 +1,0 @@
-fastapi
-uvicorn[standard]
-itsdangerous
-python-multipart
-httpx
-google-cloud-storage
-Pillow>=10.1
